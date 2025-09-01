@@ -2,9 +2,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { FlatList, Text, View } from 'react-native';
+import { FlatList, Pressable, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { theme } from '../../../lib/theme';
+import BodyText from '../../../primitives/BodyText';
 import Heading from '../../../primitives/Heading';
 import InfoCard from '../../../primitives/InfoCard';
 import ListCard from '../../../primitives/ListCard';
@@ -88,13 +89,36 @@ export default function VaultHome() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
       <View style={{ flex: 1, padding: theme.spacing.m }}>
-        <Heading
-          size="xl"
-          testID="vault-title"
-          style={{ textAlign: 'center', marginBottom: theme.spacing.xxl}}
-        >
-          The Story Vault
-        </Heading>
+        {/* Header with Search Button */}
+        <View style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          marginBottom: theme.spacing.xxl,
+        }}>
+          <View style={{ flex: 1 }} />
+          <Heading
+            size="xl"
+            testID="vault-title"
+            style={{ textAlign: 'center' }}
+          >
+            The Story Vault
+          </Heading>
+          <View style={{ flex: 1, alignItems: 'flex-end' }}>
+            <Pressable
+              onPress={() => router.push('/(app)/search')}
+              style={{
+                padding: theme.spacing.s,
+                backgroundColor: theme.colors.bgAlt,
+                borderRadius: theme.radii.md,
+                borderWidth: 1,
+                borderColor: theme.colors.btnBorder,
+                ...theme.shadows.cardSm,
+              }}
+            >
+              <BodyText style={{ fontSize: 18 }}>🔍</BodyText>
+            </Pressable>
+          </View>
+        </View>
 
         {/* Cards with gaps */}
         <View style={{ gap: theme.spacing.m }}>
