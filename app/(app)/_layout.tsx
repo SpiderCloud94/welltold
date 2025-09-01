@@ -1,3 +1,4 @@
+import { Feather } from '@expo/vector-icons';
 import { Link, Redirect, Stack, usePathname } from 'expo-router';
 import React from 'react';
 import { Pressable, View } from 'react-native';
@@ -13,25 +14,31 @@ function BottomTabs() {
   const isVault    = pathname === '/'                   || pathname?.startsWith('/vault') || pathname?.startsWith('/story');
   const isSettings = pathname?.startsWith('/settings');
 
-  const Item = ({ to, label, active }: { to: string; label: string; active?: boolean }) => (
-    <Link href={to} asChild>
-      <Pressable style={{
-        flex: 1, alignItems: 'center', paddingVertical: theme.spacing.s,
-        borderTopWidth: active ? 2 : 1,
-        borderTopColor: active ? theme.colors.primary : theme.colors.btnBorder,
-        backgroundColor: theme.colors.bgAlt,
-      }}>
-        <BodyText style={{ opacity: active ? 1 : 0.7 }}>{label}</BodyText>
-      </Pressable>
-    </Link>
-  );
+  const Item = ({ to, label, iconName, active }: { to: string; label: string; iconName: keyof typeof Feather.glyphMap; active?: boolean }) => {
+    const color = active ? theme.colors.primary : theme.colors.text;
+    const opacity = active ? 1 : 0.7;
+    
+    return (
+      <Link href={to} asChild>
+        <Pressable style={{
+          flex: 1, alignItems: 'center', paddingVertical: theme.spacing.s,
+          borderTopWidth: active ? 2 : 1,
+          borderTopColor: active ? theme.colors.primary : theme.colors.btnBorder,
+          backgroundColor: theme.colors.bgAlt,
+        }}>
+          <Feather name={iconName} size={20} color={color} style={{ opacity, marginBottom: 2 }} />
+          <BodyText style={{ opacity }}>{label}</BodyText>
+        </Pressable>
+      </Link>
+    );
+  };
 
   return (
     <SafeAreaView edges={['bottom']} style={{ backgroundColor: theme.colors.bgAlt }}>
       <View style={{ flexDirection: 'row' }}>
-        <Item to="/tell"      label="Tell"      active={isTell} />
-        <Item to="/"          label="Vault"     active={isVault} />
-        <Item to="/settings"  label="Settings"  active={isSettings} />
+        <Item to="/tell"      label="Tell"      iconName="mic"      active={isTell} />
+        <Item to="/"          label="Vault"     iconName="archive"  active={isVault} />
+        <Item to="/settings"  label="Settings"  iconName="settings" active={isSettings} />
       </View>
     </SafeAreaView>
   );

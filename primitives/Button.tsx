@@ -1,4 +1,4 @@
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text, ViewStyle } from 'react-native';
 import { theme } from '../lib/theme';
 
 type Props = {
@@ -7,9 +7,10 @@ type Props = {
   variant?: 'primary' | 'secondary' | 'link' | 'warning';
   disabled?: boolean;
   testID?: string;
+  style?: ViewStyle;
 };
 
-export default function Button({ title, onPress, variant='primary', disabled, testID }: Props) {
+export default function Button({ title, onPress, variant='primary', disabled, testID, style }: Props) {
   return (
     <Pressable
       testID={testID}
@@ -23,6 +24,7 @@ export default function Button({ title, onPress, variant='primary', disabled, te
         variant === 'link' && styles.link,
         disabled && { opacity: 0.5 },
         pressed && { opacity: 0.9 },
+        style,
       ]}
     >
       <Text

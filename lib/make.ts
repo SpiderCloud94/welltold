@@ -1,71 +1,91 @@
-import { getDeviceId } from './device';
+// lib/make.ts
+import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { db } from './firebase';
 
-type UploadPayload = {
-  audioUri: string;
-  filename: string;
-  mimeType: string;
-  userId: string;
-  title: string;
-  durationSec: number;
-  contextbox: string;
-  clientId: string;
-};
+const WEBHOOK_URL = process.env.EXPO_PUBLIC_MAKE_WEBHOOK || '';
+const SECRET      = process.env.EXPO_PUBLIC_WELLTOLD_SECRET || '';
+const FAKE_MAKE   = process.env.EXPO_PUBLIC_FAKE_MAKE === '1' || !WEBHOOK_URL || !SECRET;
 
-export async function uploadToMake(payload: UploadPayload): Promise<{ storyId: string }> {
-  const deviceId = await getDeviceId();
-  const secret = process.env.EXPO_PUBLIC_WELLTOLD_SECRET;
-  const webhookUrl = process.env.EXPO_PUBLIC_MAKE_WEBHOOK;
+export type UploadResult = { storyId: string };
 
-  if (!webhookUrl || !secret) {
-    throw new Error('Missing webhook URL or secret');
-  }
+/**
+ * uploadToMake
+ * - Dev: if FAKE_MAKE → write Firestore doc + flip statuses (no webhook).
+ * - Prod: call webhook and return { storyId }.
+ */
+export async function uploadToMake(form: FormData): Promise<UploadResult> {
+  if (FAKE_MAKE) return fakeUploadToFirestore(form);
+  return realUploadToWebhook(form);
+}
 
-  const formData = new FormData();
-  
-  // Add audio file
-  formData.append('file', {
-    uri: payload.audioUri,
-    type: payload.mimeType,
-    name: payload.filename,
-  } as any);
+/* ---------------------- Dev (no webhook) ---------------------- */
+async function fakeUploadToFirestore(form: FormData): Promise<UploadResult> {
+  // Pull minimal fields with safe fallbacks
+  const userId      = String(form.get('userId') || 'dev-user');
+  const title       = String(form.get('title') || 'Untitled Story');
+  const contextbox  = String(form.get('contextbox') || '');
+  const durationSec = Number(form.get('durationSec') || 0);
+  // Reuse clientId as a stable story id (or make one)
+  const storyId     = String(form.get('clientId') || Date.now());
 
-  // Add other fields
-  formData.append('filename', payload.filename);
-  formData.append('mimeType', payload.mimeType);
-  formData.append('userId', payload.userId);
-  formData.append('deviceId', deviceId);
-  formData.append('title', payload.title);
-  formData.append('durationSec', payload.durationSec.toString());
-  formData.append('contextbox', payload.contextbox);
-  formData.append('clientId', payload.clientId);
-  formData.append('createdAtISO', new Date().toISOString());
-  formData.append('secret', secret);
+  const ref = doc(db, `users/${userId}/vaultentry/${storyId}`);
 
-  const response = await fetch(webhookUrl, {
+  // Initial create → queued
+  await setDoc(
+    ref,
+    {
+      id: storyId,
+      title,
+      contextbox,
+      durationSec,
+      recordingUrl: '',
+      transcript: '',
+      feedback: '',
+      status: 'queued',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  // Flip statuses just like the server would
+  setTimeout(() => updateDoc(ref, { status: 'transcribing', updatedAt: serverTimestamp() }), 2500);
+  setTimeout(() => updateDoc(ref, { status: 'analyzing',   updatedAt: serverTimestamp() }), 5000);
+  setTimeout(() => updateDoc(ref, { status: 'ready',       updatedAt: serverTimestamp() }), 9000);
+
+  return { storyId };
+}
+
+/* ---------------------- Prod (webhook) ---------------------- */
+async function realUploadToWebhook(form: FormData): Promise<UploadResult> {
+  const deviceId = String(form.get('deviceId') || '');
+  const res = await fetch(WEBHOOK_URL, {
     method: 'POST',
     headers: {
       'X-Device-Id': deviceId,
-      'X-Welltold-Secret': secret,
+      'X-Welltold-Secret': SECRET,
     },
-    body: formData,
+    body: form,
   });
 
-  if (response.status === 409) {
-    // Duplicate - treat as success
-    const data = await response.json().catch(() => ({}));
-    return { storyId: data.storyId || 'duplicate' };
+  // Expected: 200/201 with { storyId }, or 409 duplicate with { storyId }
+  if (res.status === 409) {
+    const data = await safeJson(res);
+    return { storyId: String(data?.storyId || form.get('clientId') || '') };
+  }
+  if (res.ok) {
+    const data = await safeJson(res);
+    return { storyId: String(data?.storyId || form.get('clientId') || '') };
   }
 
-  if (!response.ok) {
-    if (response.status === 413) {
-      throw new Error('Clip too long/large. Please re-record.');
-    }
-    if (response.status === 429 || response.status === 503) {
-      throw new Error('Server busy. Try again soon.');
-    }
-    throw new Error('Couldn\'t upload. Retry.');
-  }
-
-  const data = await response.json();
-  return { storyId: data.storyId || 'uploaded' };
+  // Map common server pressures to a readable error message
+  if (res.status === 413) throw new Error('TOO_LARGE_OR_LONG');
+  if (res.status === 429) throw new Error('BUSY_TRY_LATER');
+  if (res.status === 503) throw new Error('BUSY_TRY_LATER');
+  throw new Error((await res.text().catch(() => 'UPLOAD_FAILED')) || 'UPLOAD_FAILED');
 }
+
+async function safeJson(r: Response) {
+  try { return await r.json(); } catch { return null; }
+}
+

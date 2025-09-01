@@ -8,9 +8,9 @@ import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from 'reac
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { validateAudioFile } from '../../lib/config';
-import { getDeviceId } from '../../lib/device';
 import { uploadToMake } from '../../lib/make';
 import { startRecording, stopRecordingGetFile } from '../../lib/recording';
+import { resolveUid } from '../../lib/runtime';
 import { theme } from '../../lib/theme';
 import BodyText from '../../primitives/BodyText';
 import Button from '../../primitives/Button';
@@ -39,13 +39,15 @@ export default function Tell() {
 
   // Timer for recording
   React.useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval> | undefined;
     if (recordingState === 'recording') {
       interval = setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [recordingState]);
 
   // Load saved context
@@ -110,7 +112,7 @@ export default function Tell() {
   };
 
   const handleSave = async () => {
-    if (!audioUri || !user) return;
+    if (!audioUri) return;
 
     setUploading(true);
     setUploadError(null);
@@ -123,24 +125,28 @@ export default function Tell() {
         return;
       }
 
-      const deviceId = await getDeviceId();
-      
-      const result = await uploadToMake({
-        audioUri,
-        filename: 'story.m4a',
-        mimeType: 'audio/m4a',
-        userId: user.uid || 'anonymous',
-        title: reviewTitle,
-        durationSec: audioDuration,
-        contextbox: context,
-        clientId: deviceId,
-      });
+      const uid = resolveUid(user?.uid);
+      if (!uid) { 
+        router.replace('/login'); 
+        return; 
+      }
 
+      const form = new FormData();
+      form.append('userId', uid);
+      form.append('title', reviewTitle || 'Untitled Story');
+      form.append('durationSec', String(audioDuration || 0));
+      form.append('contextbox', context || '');
+      form.append('clientId', String(Date.now()));
+      form.append('createdAtISO', new Date().toISOString());
+      // For fake mode we don't need the file; real mode will use your recording payload later.
+
+      const { storyId } = await uploadToMake(form);
+      
       // Clear saved context on successful upload
       await clearSavedContext();
       
       // Navigate to processing
-      router.replace(`/processing?storyId=${result.storyId}`);
+      router.replace(`/processing?storyId=${storyId}`);
     } catch (error) {
       console.error('Upload failed:', error);
       setUploadError(error instanceof Error ? error.message : 'Upload failed');
@@ -207,17 +213,7 @@ export default function Tell() {
           </BodyText>
         </View>
 
-        {/* Decorative Wave Area */}
-        <View style={{
-          height: 120,
-          backgroundColor: theme.colors.optionInactive,
-          borderRadius: theme.radii.md,
-          marginBottom: theme.spacing.xl,
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}>
-          <Text style={{ fontSize: 48, opacity: 0.3 }}>〜</Text>
-        </View>
+
 
         {/* Permission Denied Panel */}
         {permissionDenied && (
@@ -274,7 +270,7 @@ export default function Tell() {
             {getMicButtonLabel()}
           </BodyText>
           
-          <Text style={{ ...theme.typography.titleM, color: theme.colors.text }}>
+          <Text style={[{ fontSize: 20, fontWeight: '600' as const, lineHeight: 26 }, { color: theme.colors.text }]}>
             {formatTime(recordingTime)}
           </Text>
         </View>
@@ -355,20 +351,9 @@ export default function Tell() {
             )}
 
             {/* Action Buttons */}
-            <View style={{ flexDirection: 'row', gap: theme.spacing.m, marginTop: 'auto' }}>
-              <Button
-                title="Delete"
-                variant="secondary"
-                onPress={() => withAccess(handleDelete)}
-                style={{ flex: 1 }}
-              />
-              <Button
-                title={uploading ? 'Saving...' : 'Save'}
-                variant="primary"
-                onPress={() => withAccess(handleSave)}
-                disabled={uploading || (!BUILD_ALLOW_TELL && !hasAccess)}
-                style={{ flex: 1 }}
-              />
+            <View style={{ flexDirection:'row', justifyContent:'center', gap: theme.spacing.m, marginTop: theme.spacing.m }}>
+              <Button variant="secondary" title="Re-Record" onPress={() => withAccess(handleDelete)} />
+              <Button variant="primary" title={uploading ? 'Saving...' : 'Save'} onPress={() => withAccess(handleSave)} disabled={uploading || (!BUILD_ALLOW_TELL && !hasAccess)} />
             </View>
       </View>
         </SafeAreaView>

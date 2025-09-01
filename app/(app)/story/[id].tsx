@@ -382,18 +382,42 @@ export default function StoryDetail() {
               marginBottom: theme.spacing.l,
             }}
           >
-            <Button
-              variant="secondary"
-              title="Re-Record"
+            <Pressable
               onPress={handleReRecord}
               testID="re-record-button"
-            />
-            <Button
-              variant="warning"
-              title="Delete"
+              style={({ pressed }) => ({
+                height: 52,
+                borderRadius: theme.radii.pill,
+                paddingHorizontal: theme.spacing.l,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: theme.colors.bgAlt,
+                opacity: pressed ? 0.9 : 1,
+              })}
+            >
+              <Text style={{ color: theme.colors.text, fontWeight: '600', fontSize: 16 }}>
+                Re-Record
+              </Text>
+            </Pressable>
+            <Pressable
               onPress={handleDelete}
               testID="delete-button"
-            />
+              style={({ pressed }) => ({
+                height: 52,
+                borderRadius: theme.radii.pill,
+                paddingHorizontal: theme.spacing.l,
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: 'transparent',
+                borderWidth: 1,
+                borderColor: theme.colors.btnBorder,
+                opacity: pressed ? 0.9 : 1,
+              })}
+            >
+              <Text style={{ color: theme.colors.error, fontWeight: '600', fontSize: 16 }}>
+                Delete
+              </Text>
+            </Pressable>
           </View>
 
           {/* Feedback Accordion */}
