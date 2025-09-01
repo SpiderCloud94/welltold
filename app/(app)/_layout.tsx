@@ -1,5 +1,5 @@
 import { Feather } from '@expo/vector-icons';
-import { Link, Redirect, Stack, usePathname } from 'expo-router';
+import { Link, Redirect, Stack, usePathname, type Href } from 'expo-router';
 import React from 'react';
 import { Pressable, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -14,7 +14,7 @@ function BottomTabs() {
   const isVault    = pathname === '/'                   || pathname?.startsWith('/vault') || pathname?.startsWith('/story');
   const isSettings = pathname?.startsWith('/settings');
 
-  const Item = ({ to, label, iconName, active }: { to: string; label: string; iconName: keyof typeof Feather.glyphMap; active?: boolean }) => {
+  const Item = ({ to, label, iconName, active }: { to: Href; label: string; iconName: keyof typeof Feather.glyphMap; active?: boolean }) => {
     const color = active ? theme.colors.primary : theme.colors.text;
     const opacity = active ? 1 : 0.7;
     
@@ -33,12 +33,16 @@ function BottomTabs() {
     );
   };
 
+  const TO_TELL: Href = '/(app)/tell';
+  const TO_VAULT: Href = '/(app)/vault';
+  const TO_SETTINGS: Href = '/(app)/settings';
+
   return (
     <SafeAreaView edges={['bottom']} style={{ backgroundColor: theme.colors.bgAlt }}>
       <View style={{ flexDirection: 'row' }}>
-        <Item to="/tell"      label="Tell"      iconName="mic"      active={isTell} />
-        <Item to="/"          label="Vault"     iconName="archive"  active={isVault} />
-        <Item to="/settings"  label="Settings"  iconName="settings" active={isSettings} />
+        <Item to={TO_TELL} label="Tell" iconName="mic" active={isTell} />
+        <Item to={TO_VAULT} label="Vault" iconName="archive" active={isVault} />
+        <Item to={TO_SETTINGS} label="Settings" iconName="settings" active={isSettings} />
       </View>
     </SafeAreaView>
   );
