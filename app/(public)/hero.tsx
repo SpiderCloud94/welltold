@@ -6,6 +6,7 @@ import { useRouter } from 'expo-router';
 import React from 'react';
 import { ImageBackground, Pressable, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { markHeroSeen } from '../../lib/firstRun';
 import { theme } from '../../lib/theme';
 
 // If your file is elsewhere, adjust the path:
@@ -13,6 +14,18 @@ const bg = require('../../assets/images/hero.png');
 
 export default function Hero() {
   const router = useRouter();
+
+  //Re add this code saved in code notes on notion
+  const handleContinue = async () => {
+    try {
+      await markHeroSeen();
+      router.push('/(public)/onboarding/question1');
+    } catch (error) {
+      console.error('Error marking hero as seen:', error);
+      // Continue anyway to avoid blocking user
+      router.push('/(public)/onboarding/question1');
+    }
+  };
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.bg }}>
@@ -57,7 +70,7 @@ export default function Hero() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Continue"
-              onPress={() => router.push('/(public)/onboarding/question1')}
+              onPress={handleContinue}
               style={{
                 backgroundColor: theme.colors.text, // dark pill from tokens
                 borderRadius: theme.radii.pill,
