@@ -6,7 +6,9 @@
       "@/*": [
         "./*"
       ]
-    }
+    },
+    "skipLibCheck": true,
+    "jsx": "react-jsx"
   },
   "include": [
     "**/*.ts",
