@@ -1,16 +1,34 @@
-import { Redirect } from 'expo-router';
-import { useAuth } from '../providers/AuthProvider';
+import { useAuth } from '@clerk/clerk-expo';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router } from 'expo-router';
+import { useEffect } from 'react';
 
-export default function Root() {
-  const { user, loading } = useAuth();
+const ONBOARDING_KEY = 'onboardingDone';
 
-  if (loading) return null;
+export default function Boot() {
+  const { isLoaded, isSignedIn } = useAuth();
 
-  if (user) {
-    // User is authenticated → go to app
-    return <Redirect href="/(app)/vault" />;
-  } else {
-    // User not authenticated → go to public entry
-    return <Redirect href="/(public)" />;
-  }
+  useEffect(() => {
+    (async () => {
+      if (!isLoaded) return;
+
+      if (isSignedIn) {
+        // ✅ Signed in → Vault tab (tab bar visible)
+        router.replace('/(app)/(tabs)/vault');
+        return;
+      }
+
+      // ❌ Not authed → check onboarding flag
+      const done = (await AsyncStorage.getItem(ONBOARDING_KEY)) === '1';
+      if (!done) {
+        router.replace('/agree');
+        return;
+      }
+
+      // Onboarding done → straight to provider buttons
+      router.replace('/(auth)/sign-in');
+    })();
+  }, [isLoaded, isSignedIn]);
+
+  return null;
 }

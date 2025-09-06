@@ -1,5 +1,10 @@
-import { Redirect } from 'expo-router';
+import { router } from 'expo-router';
+import { useEffect } from 'react';
 
 export default function AppIndex() {
-  return <Redirect href="/vault" />;
+  useEffect(() => {
+    router.replace('/(app)/(tabs)/vault');
+  }, []);
+
+  return null;
 }

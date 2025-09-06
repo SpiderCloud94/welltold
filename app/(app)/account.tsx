@@ -10,7 +10,7 @@ import { theme } from '../../lib/theme';
 import BodyText from '../../primitives/BodyText';
 import Heading from '../../primitives/Heading';
 
-import { deleteUser, getAuth, signOut } from 'firebase/auth';
+import { useAuth, useUser } from '@clerk/clerk-expo';
 import {
   collection,
   deleteDoc,
@@ -18,7 +18,6 @@ import {
   getDocs,
 } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import { useAuth } from '../../providers/AuthProvider'; // assumes it exposes { user }
 
 // Android app-settings deep link helpers
 let startAndroidSettings: (() => Promise<void>) | null = null;
@@ -82,19 +81,17 @@ function Row({
 
 export default function AccountScreen() {
   const router = useRouter();
-  const { user } = useAuth();
-  const auth = getAuth();
+  const { user, isSignedIn } = useUser();
+  const { signOut } = useAuth();
+
+  // Guard: must be signed in
+  if (!isSignedIn) { router.replace('/(auth)/sign-in'); return null; }
 
   const [banner, setBanner] = React.useState<string | null>(null);
   const go = (to: Href) => router.push(to);
 
-  // Guard: must be signed in
-  React.useEffect(() => {
-    if (!user) router.replace('/login' as const);
-  }, [user]);
-
   const openChangeEmail = async () => {
-    const current = user?.email ?? '';
+    const current = user?.primaryEmailAddress?.emailAddress ?? '';
     const subject = encodeURIComponent('Change Email Request – WellTold');
     const body = encodeURIComponent(
       `Hi WellTold team,\n\nI’d like to update my account email from ${current} to [new].\n\nThanks!`
@@ -146,9 +143,9 @@ export default function AccountScreen() {
 
   const doLogout = async () => {
     try {
-      await signOut(auth);
+      await signOut(); // Clerk sign-out
       await AsyncStorage.clear();
-      router.replace('/login' as const);
+      router.replace('/(auth)/sign-in');
     } catch {
       setBanner('Could not log out. Please try again.');
     }
@@ -163,14 +160,14 @@ export default function AccountScreen() {
       promises.push(deleteDoc(doc(db, 'users', uid, 'vaultentry', d.id)));
     });
     await Promise.all(promises).catch(() => {
-      // swallow individual failures; we’ll still attempt account delete
+      // swallow individual failures; we’ll still attempt flow completion
     });
   }
 
   const doDelete = async () => {
     Alert.alert(
       'Delete Account',
-      'This will permanently delete your account and all your stories. This action cannot be undone.',
+      'This will permanently delete your account data in WellTold. This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -180,16 +177,15 @@ export default function AccountScreen() {
             try {
               if (!user) return;
               setBanner(null);
-              await deleteAllUserData(user.uid);
-              // delete auth user (may require recent login in real life)
-              if (auth.currentUser) {
-                await deleteUser(auth.currentUser);
-              }
+              // Delete app data in Firestore
+              await deleteAllUserData(user.id);
+              // NOTE: Deleting the Clerk user requires a backend/API key.
+              // For now we sign out after data deletion.
+              await signOut();
               await AsyncStorage.clear();
-              router.replace('/login' as const);
+              router.replace('/(auth)/sign-in');
             } catch (e: any) {
-              // Common: requires recent login
-              setBanner('Could not delete account. You may need to log in again first.');
+              setBanner('Could not delete account. Please try again.');
             }
           },
         },
@@ -209,7 +205,7 @@ export default function AccountScreen() {
           paddingBottom: theme.spacing.m,
         }}
       >
-        <Pressable onPress={() => go('/(app)/settings' as const)} style={{ padding: theme.spacing.s }}>
+        <Pressable onPress={() => go('/(app)/(tabs)/settings' as const)} style={{ padding: theme.spacing.s }}>
           <Text style={{ fontSize: 18 }}>←</Text>
         </Pressable>
         <Heading size="xl" style={{ flex: 1, textAlign: 'center' }}>
@@ -235,7 +231,12 @@ export default function AccountScreen() {
 
       {/* Rows */}
       <ScrollView contentContainerStyle={{ paddingHorizontal: theme.spacing.m, paddingBottom: theme.spacing.xl }}>
-        <Row icon="📧" title="Change Email" subtitle={user?.email ?? undefined} onPress={openChangeEmail} />
+        <Row
+          icon="📧"
+          title="Change Email"
+          subtitle={user?.primaryEmailAddress?.emailAddress ?? undefined}
+          onPress={openChangeEmail}
+        />
         <Row
           icon={Platform.OS === 'ios' ? '🎤' : '⚙️'}
           title="Permissions"

@@ -1,9 +1,13 @@
+// app/(app)/story/[id].tsx
+import { useUser } from '@clerk/clerk-expo';
 import { Audio } from 'expo-av';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { doc, onSnapshot } from 'firebase/firestore';
 import React from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { db } from '../../../lib/firebase';
 import { theme } from '../../../lib/theme';
 import Accordion from '../../../primitives/Accordion';
 import BodyText from '../../../primitives/BodyText';
@@ -15,10 +19,7 @@ type StoryData = {
   id: string;
   title?: string;
   recordingUrl?: string;
-  feedback?: {
-    structure?: string;
-    creative?: string;
-  };
+  feedback?: { structure?: string; creative?: string };
   transcript?: string;
   createdAt?: any;
   durationSec?: number;
@@ -36,149 +37,122 @@ function formatDate(v: any) {
 
 export default function StoryDetail() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{ id?: string | string[] }>();
+  const storyId = Array.isArray(params.id) ? params.id[0] : params.id; // ✅ sanitize
+  const { user, isLoaded, isSignedIn } = useUser();
   const { active: hasEntitlement } = useEntitlement();
+
+  // Redirect only after Clerk is loaded
+  React.useEffect(() => {
+    if (!isLoaded) return;
+    if (!isSignedIn) router.replace('/(auth)/sign-in');
+  }, [isLoaded, isSignedIn, router]);
+
+  if (!isLoaded || !isSignedIn) return null;
 
   const [story, setStory] = React.useState<StoryData | null>(null);
   const [loading, setLoading] = React.useState(true);
-  const [sound, setSound] = React.useState<Audio.Sound>();
+  const [sound, setSound] = React.useState<Audio.Sound | null>(null);
   const [isPlaying, setIsPlaying] = React.useState(false);
   const [position, setPosition] = React.useState(0);
   const [duration, setDuration] = React.useState(0);
   const [feedbackExpanded, setFeedbackExpanded] = React.useState(false);
   const [transcriptExpanded, setTranscriptExpanded] = React.useState(false);
+  const [reloadKey, setReloadKey] = React.useState(0); // ✅ replaces undefined fetchStoryData
 
+  // Subscribe to story document from Firestore
   React.useEffect(() => {
-    if (id) {
-      fetchStoryData();
-    }
-  }, [id]);
-
-  React.useEffect(() => {
-    return sound
-      ? () => {
-          sound.unloadAsync();
-        }
-      : undefined;
-  }, [sound]);
-
-  const fetchStoryData = async () => {
-    try {
-      setLoading(true);
-      // Placeholder: Replace with actual Firestore fetch
-      // const doc = await getDoc(doc(firestore, `users/${uid}/vaultentry/${id}`));
-      // if (doc.exists()) {
-      //   setStory({ id: doc.id, ...doc.data() } as StoryData);
-      // }
-      
-      // Mock data for development
+    if (!isLoaded || !isSignedIn || !user || !storyId) return;
+    const docRef = doc(db, 'users', user.id, 'vaultentry', String(storyId));
+    console.log('[story] listen path:', 'users', user.id, 'vaultentry', String(storyId));
+    const unsub = onSnapshot(docRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setStory({
+          id: snap.id,
+          title: data.title || 'Untitled',
+          recordingUrl: data.recordingUrl,
+          feedback: data.feedback,
+          transcript: data.transcript,
+          status: data.status || 'queued',
+          durationSec: data.durationSec,
+          createdAt: data.createdAt,
+        });
+      } else {
+        setStory({
+          id: storyId,
+          title: 'Story Not Found',
+          status: 'failed',
+        } as StoryData);
+      }
+      setLoading(false);
+    }, (error) => {
+      console.error('[story] onSnapshot error:', error);
       setStory({
-        id: id!,
-        title: 'Sample Story',
-        recordingUrl: 'https://example.com/audio.mp3',
-        feedback: {
-          structure: 'Your story has a clear beginning, middle, and end. The narrative flows well and keeps the listener engaged.',
-          creative: 'Great use of descriptive language! Consider adding more sensory details to make the story even more vivid.',
-        },
-        transcript: 'This is a sample transcript of the story content. It would contain the full text of what was spoken in the recording.',
-        status: 'ready',
-        durationSec: 120,
-        createdAt: new Date('2024-01-15'),
-      });
-    } catch (error) {
-      console.error('Error fetching story:', error);
-      setStory({
-        id: id!,
+        id: storyId,
         title: 'Error Loading Story',
         status: 'failed',
-      });
-    } finally {
+      } as StoryData);
       setLoading(false);
-    }
-  };
+    });
+
+    return () => unsub();
+  }, [isLoaded, isSignedIn, user, storyId, reloadKey]);
+
+  // Unload audio on unmount
+  React.useEffect(() => {
+    return () => { if (sound) sound.unloadAsync().catch(() => {}); };
+  }, [sound]);
 
   const loadAudio = async () => {
     if (!story?.recordingUrl) return;
-
     try {
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: story.recordingUrl },
-        { shouldPlay: false }
-      );
-      setSound(sound);
-
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.isLoaded) {
-          setPosition(status.positionMillis || 0);
-          setDuration(status.durationMillis || 0);
-          setIsPlaying(status.isPlaying || false);
+      const { sound: s } = await Audio.Sound.createAsync({ uri: story.recordingUrl }, { shouldPlay: false });
+      setSound(s);
+      s.setOnPlaybackStatusUpdate((st) => {
+        if ('isLoaded' in st && st.isLoaded) {
+          setPosition(st.positionMillis || 0);
+          setDuration(st.durationMillis || 0);
+          setIsPlaying(!!st.isPlaying);
         }
       });
-    } catch (error) {
-      console.error('Error loading audio:', error);
+    } catch (e) {
+      console.error('Error loading audio:', e);
     }
   };
 
   const togglePlayback = async () => {
-    if (!sound) {
-      await loadAudio();
-      return;
-    }
-
-    if (isPlaying) {
-      await sound.pauseAsync();
-    } else {
-      await sound.playAsync();
-    }
-  };
-
-  const seekTo = async (positionMillis: number) => {
-    if (sound) {
-      await sound.setPositionAsync(positionMillis);
-    }
+    if (!sound) { await loadAudio(); return; }
+    if (isPlaying) await sound.pauseAsync();
+    else await sound.playAsync();
   };
 
   const handleReRecord = () => {
-    if (hasEntitlement) {
-      router.push('/tell');
-    } else {
-      router.replace('/trial/paywall');
-    }
+    if (hasEntitlement) router.push('/tell');
+    else router.replace('/trial/paywall');
   };
 
   const handleDelete = () => {
-    Alert.alert(
-      'Delete Story',
-      'Delete this story permanently?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              // Placeholder: Replace with actual Firestore + storage deletion
-              // await deleteDoc(doc(firestore, `users/${uid}/vaultentry/${id}`));
-              // await deleteObject(ref(storage, story.recordingUrl));
-              router.replace('/');
-            } catch (error) {
-              console.error('Error deleting story:', error);
-            }
-          },
+    Alert.alert('Delete Story', 'Delete this story permanently?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          // TODO: hook up Firestore + storage deletes when ready
+          router.replace('/');
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const getStatusChip = () => {
     if (!story || story.status === 'ready') return null;
-
-    const statusText = {
-      queued: 'Queued…',
-      transcribing: 'Transcribing…',
-      analyzing: 'Analyzing…',
-      failed: 'Processing failed',
-    }[story.status];
+    const statusText =
+      story.status === 'queued' ? 'Queued…' :
+      story.status === 'transcribing' ? 'Transcribing…' :
+      story.status === 'analyzing' ? 'Analyzing…' :
+      'Processing failed';
 
     return (
       <View style={{
@@ -189,18 +163,14 @@ export default function StoryDetail() {
         alignSelf: 'flex-start',
         marginBottom: theme.spacing.m,
       }}>
-        <Text style={{ color: theme.colors.bgAlt, fontSize: 14, fontWeight: '600' }}>
-          {statusText}
-        </Text>
+        <Text style={{ color: theme.colors.bgAlt, fontSize: 14, fontWeight: '600' }}>{statusText}</Text>
       </View>
     );
   };
 
-  const formatTime = (milliseconds: number) => {
-    const seconds = Math.floor(milliseconds / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  const formatTime = (ms: number) => {
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
 
   if (loading) {
@@ -241,12 +211,8 @@ export default function StoryDetail() {
               <Pressable
                 onPress={() => router.replace('/')}
                 style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 20,
-                  backgroundColor: theme.colors.bgAlt,
-                  alignItems: 'center',
-                  justifyContent: 'center',
+                  width: 40, height: 40, borderRadius: 20,
+                  backgroundColor: theme.colors.bgAlt, alignItems: 'center', justifyContent: 'center',
                   ...theme.shadows.cardSm,
                 }}
               >
@@ -254,54 +220,26 @@ export default function StoryDetail() {
               </Pressable>
             </View>
           </View>
-          <View
-            style={{
-              marginTop: theme.spacing.l,
-              marginBottom: theme.spacing.m,
-              paddingRight: theme.spacing.l,
-            }}
-          >
-            <BodyText
-              style={{
-                textAlign: 'right',
-                fontSize: 16,
-                opacity: 0.8,
-              }}
-            >
-              {formatDate(story?.createdAt)}
+          <View style={{ marginTop: theme.spacing.l, marginBottom: theme.spacing.m, paddingRight: theme.spacing.l }}>
+            <BodyText style={{ textAlign: 'right', fontSize: 16, opacity: 0.8 }}>
+              {formatDate(story.createdAt)}
             </BodyText>
           </View>
         </View>
 
-        <ScrollView 
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: theme.spacing.xl }}
-        >
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: theme.spacing.xl }}>
           {/* Status Chip */}
           {getStatusChip()}
 
           {/* Failed Error Panel */}
           {isFailed && (
-            <View style={{
-              backgroundColor: theme.colors.error,
-              borderRadius: theme.radii.md,
-              padding: theme.spacing.l,
-              marginBottom: theme.spacing.l,
-            }}>
+            <View style={{ backgroundColor: theme.colors.error, borderRadius: theme.radii.md, padding: theme.spacing.l, marginBottom: theme.spacing.l }}>
               <BodyText style={{ color: theme.colors.bgAlt, marginBottom: theme.spacing.m }}>
                 We couldn't finish processing this story.
               </BodyText>
               <View style={{ flexDirection: 'row', gap: theme.spacing.m }}>
-                <Button
-                  title="Try Again"
-                  variant="secondary"
-                  onPress={fetchStoryData}
-                />
-                <Button
-                  title="Back to Vault"
-                  variant="secondary"
-                  onPress={() => router.replace('/')}
-                />
+                <Button title="Try Again" variant="secondary" onPress={() => setReloadKey(k => k + 1)} />{/* ✅ retry */}
+                <Button title="Back to Vault" variant="secondary" onPress={() => router.replace('/')} />
               </View>
             </View>
           )}
@@ -317,54 +255,24 @@ export default function StoryDetail() {
             ...theme.shadows.cardSm,
           }}>
             {!isReady ? (
-              <BodyText style={{ textAlign: 'center', color: theme.colors.text }}>
-                Audio will appear when ready.
-              </BodyText>
+              <BodyText style={{ textAlign: 'center', color: theme.colors.text }}>Audio will appear when ready.</BodyText>
             ) : !story.recordingUrl ? (
-              <BodyText style={{ textAlign: 'center', color: theme.colors.text }}>
-                Audio not available.
-              </BodyText>
+              <BodyText style={{ textAlign: 'center', color: theme.colors.text }}>Audio not available.</BodyText>
             ) : (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.m }}>
-                {/* Play/Pause Button */}
                 <Pressable
                   onPress={togglePlayback}
-                  style={{
-                    width: 48,
-                    height: 48,
-                    borderRadius: 24,
-                    backgroundColor: theme.colors.primary,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
+                  style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: theme.colors.primary, alignItems: 'center', justifyContent: 'center' }}
                 >
-                  <Text style={{ color: theme.colors.bgAlt, fontSize: 20 }}>
-                    {isPlaying ? '⏸' : '▶'}
-                  </Text>
+                  <Text style={{ color: theme.colors.bgAlt, fontSize: 20 }}>{isPlaying ? '⏸' : '▶'}</Text>
                 </Pressable>
-
-                {/* Scrubber and Time */}
                 <View style={{ flex: 1 }}>
-                  <View style={{
-                    height: 4,
-                    backgroundColor: theme.colors.divider,
-                    borderRadius: 2,
-                    marginBottom: theme.spacing.xs,
-                  }}>
-                    <View style={{
-                      height: 4,
-                      backgroundColor: theme.colors.primary,
-                      borderRadius: 2,
-                      width: duration > 0 ? `${(position / duration) * 100}%` : '0%',
-                    }} />
+                  <View style={{ height: 4, backgroundColor: theme.colors.divider, borderRadius: 2, marginBottom: theme.spacing.xs }}>
+                    <View style={{ height: 4, backgroundColor: theme.colors.primary, borderRadius: 2, width: duration > 0 ? `${(position / duration) * 100}%` : '0%' }} />
                   </View>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>
-                      {formatTime(position)}
-                    </Text>
-                    <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>
-                      {formatTime(duration)}
-                    </Text>
+                    <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>{formatTime(position)}</Text>
+                    <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>{formatTime(duration)}</Text>
                   </View>
                 </View>
               </View>
@@ -372,86 +280,44 @@ export default function StoryDetail() {
           </View>
 
           {/* Actions Row */}
-          <View
-            style={{
-              flexDirection: 'row',
-              justifyContent: 'center',
-              alignItems: 'center',
-              gap: theme.spacing.m,
-              marginTop: theme.spacing.m,
-              marginBottom: theme.spacing.l,
-            }}
-          >
+          <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: theme.spacing.m, marginTop: theme.spacing.m, marginBottom: theme.spacing.l }}>
             <Pressable
               onPress={handleReRecord}
               testID="re-record-button"
               style={({ pressed }) => ({
-                height: 52,
-                borderRadius: theme.radii.pill,
-                paddingHorizontal: theme.spacing.l,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: theme.colors.bgAlt,
-                opacity: pressed ? 0.9 : 1,
+                height: 52, borderRadius: theme.radii.pill, paddingHorizontal: theme.spacing.l,
+                alignItems: 'center', justifyContent: 'center',
+                backgroundColor: theme.colors.bgAlt, opacity: pressed ? 0.9 : 1,
               })}
             >
-              <Text style={{ color: theme.colors.text, fontWeight: '600', fontSize: 16 }}>
-                Re-Record
-              </Text>
+              <Text style={{ color: theme.colors.text, fontWeight: '600', fontSize: 16 }}>Re-Record</Text>
             </Pressable>
             <Pressable
               onPress={handleDelete}
               testID="delete-button"
               style={({ pressed }) => ({
-                height: 52,
-                borderRadius: theme.radii.pill,
-                paddingHorizontal: theme.spacing.l,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: 'transparent',
-                borderWidth: 1,
-                borderColor: theme.colors.btnBorder,
-                opacity: pressed ? 0.9 : 1,
+                height: 52, borderRadius: theme.radii.pill, paddingHorizontal: theme.spacing.l,
+                alignItems: 'center', justifyContent: 'center',
+                backgroundColor: 'transparent', borderWidth: 1, borderColor: theme.colors.btnBorder, opacity: pressed ? 0.9 : 1,
               })}
             >
-              <Text style={{ color: theme.colors.error, fontWeight: '600', fontSize: 16 }}>
-                Delete
-              </Text>
+              <Text style={{ color: theme.colors.error, fontWeight: '600', fontSize: 16 }}>Delete</Text>
             </Pressable>
           </View>
 
-          {/* Feedback Accordion */}
+          {/* Feedback */}
           <View style={{ marginTop: theme.spacing.l, marginBottom: theme.spacing.m }}>
-            <Accordion
-              title="Feedback"
-              expanded={feedbackExpanded}
-              onToggle={() => setFeedbackExpanded(!feedbackExpanded)}
-              testID="feedback-accordion"
-            >
-              {!isReady ? (
+            <Accordion title="Feedback" expanded={feedbackExpanded} onToggle={() => setFeedbackExpanded(!feedbackExpanded)} testID="feedback-accordion">
+              {story.status !== 'ready' ? (
                 <BodyText>Feedback not ready yet.</BodyText>
               ) : (
                 <View style={{ gap: theme.spacing.l }}>
                   <View>
-                    <Text style={{
-                      ...theme.typography.body,
-                      color: theme.colors.text,
-                      fontWeight: '700',
-                      marginBottom: theme.spacing.xs,
-                    }}>
-                      Structure Feedback
-                    </Text>
+                    <Text style={{ ...theme.typography.body, color: theme.colors.text, fontWeight: '700', marginBottom: theme.spacing.xs }}>Structure Feedback</Text>
                     <BodyText>{story.feedback?.structure || 'No structure feedback available.'}</BodyText>
                   </View>
                   <View>
-                    <Text style={{
-                      ...theme.typography.body,
-                      color: theme.colors.text,
-                      fontWeight: '700',
-                      marginBottom: theme.spacing.xs,
-                    }}>
-                      Creative Notes
-                    </Text>
+                    <Text style={{ ...theme.typography.body, color: theme.colors.text, fontWeight: '700', marginBottom: theme.spacing.xs }}>Creative Notes</Text>
                     <BodyText>{story.feedback?.creative || 'No creative notes available.'}</BodyText>
                   </View>
                 </View>
@@ -459,18 +325,9 @@ export default function StoryDetail() {
             </Accordion>
           </View>
 
-          {/* Transcript Accordion */}
-          <Accordion
-            title="Transcript"
-            expanded={transcriptExpanded}
-            onToggle={() => setTranscriptExpanded(!transcriptExpanded)}
-            testID="transcript-accordion"
-          >
-            {!isReady ? (
-              <BodyText>Transcript not ready yet.</BodyText>
-            ) : (
-              <BodyText>{story.transcript || 'No transcript available.'}</BodyText>
-            )}
+          {/* Transcript */}
+          <Accordion title="Transcript" expanded={transcriptExpanded} onToggle={() => setTranscriptExpanded(!transcriptExpanded)} testID="transcript-accordion">
+            {story.status !== 'ready' ? <BodyText>Transcript not ready yet.</BodyText> : <BodyText>{story.transcript || 'No transcript available.'}</BodyText>}
           </Accordion>
         </ScrollView>
       </View>

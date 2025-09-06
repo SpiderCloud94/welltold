@@ -1,19 +1,14 @@
-// lib/firebase.ts
-// 🔒 STUB ONLY — replace with real Firebase config when wiring day comes
+import { getApps, initializeApp } from 'firebase/app';
+import { getFirestore } from 'firebase/firestore';
 
-export const db: any = {}; // fake Firestore
-
-export const auth: any = {
-  currentUser: {
-    uid: 'stub-uid',
-    email: 'stub@example.com',
-  },
+const firebaseConfig = {
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY!,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN!,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID!,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET!,
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID!,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID!,
 };
 
-// fake helpers so code compiles
-export async function signOut() {
-  console.log('stub: signOut');
-}
-export async function deleteUser() {
-  console.log('stub: deleteUser');
-}
+const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+export const db = getFirestore(app);

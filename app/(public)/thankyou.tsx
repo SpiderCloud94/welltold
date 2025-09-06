@@ -2,17 +2,17 @@
 // Guards: tokens only (no raw hex); public screen.
 
 import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
+import { router } from 'expo-router';
 import LottieView from 'lottie-react-native';
-import React from 'react';
+import React, { useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { theme } from '../../lib/theme';
 import Heading from '../../primitives/Heading';
 
 export default function ThankYou() {
-  const router = useRouter();
   const animRef = React.useRef<LottieView>(null);
 
   // Play reliably whenever this screen gains focus
@@ -23,6 +23,11 @@ export default function ThankYou() {
       return () => animRef.current?.pause();
     }, []),
   );
+
+  const onContinue = useCallback(async () => {
+    await AsyncStorage.setItem('onboardingDone', '1');
+    router.replace('/(auth)/sign-in');         // go straight to provider buttons
+  }, []);
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
@@ -52,7 +57,7 @@ export default function ThankYou() {
         {/* Bottom primary button */}
         <SafeAreaView edges={['bottom']} style={styles.footer}>
           <Pressable
-            onPress={() => router.replace('/(public)/login')}
+            onPress={onContinue}
             style={styles.primaryBtn}
             accessibilityRole="button"
           >

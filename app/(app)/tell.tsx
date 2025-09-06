@@ -7,22 +7,24 @@ import React from 'react';
 import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useUser } from '@clerk/clerk-expo';
 import { validateAudioFile } from '../../lib/config';
 import { uploadToMake } from '../../lib/make';
 import { startRecording, stopRecordingGetFile } from '../../lib/recording';
-import { resolveUid } from '../../lib/runtime';
+// ❌ remove resolveUid (Firebase-era). Clerk gives user.id directly.
+// import { resolveUid } from '../../lib/runtime';
 import { theme } from '../../lib/theme';
 import BodyText from '../../primitives/BodyText';
 import Button from '../../primitives/Button';
 import Heading from '../../primitives/Heading';
-import { useAuth } from '../../providers/AuthProvider';
 import { useEntitlement } from '../../providers/EntitlementsProvider';
 
 type RecordingState = 'idle' | 'recording' | 'review';
 
 export default function Tell() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, isSignedIn } = useUser();
+  if (!isSignedIn) { router.replace('/(auth)/sign-in'); return null; }
   const { active: hasAccess } = useEntitlement();
   
   const [context, setContext] = React.useState('');
@@ -125,9 +127,10 @@ export default function Tell() {
         return;
       }
 
-      const uid = resolveUid(user?.uid);
+      // ✅ Clerk user id (not Firebase uid)
+      const uid = user?.id;
       if (!uid) { 
-        router.replace('/login'); 
+        router.replace('/(auth)/sign-in'); 
         return; 
       }
 
@@ -138,7 +141,15 @@ export default function Tell() {
       form.append('contextbox', context || '');
       form.append('clientId', String(Date.now()));
       form.append('createdAtISO', new Date().toISOString());
-      // For fake mode we don't need the file; real mode will use your recording payload later.
+      // If you create the Firestore doc client-side, ensure createdAt is a server Timestamp.
+      // Example (uncomment if/where you write to Firestore here):
+      // import { setDoc, doc, serverTimestamp } from 'firebase/firestore';
+      // await setDoc(doc(db, 'users', user.id, 'vaultentry', storyId), {
+      //   title: reviewTitle || 'Untitled Story',
+      //   status: 'queued',
+      //   createdAt: serverTimestamp(),
+      // }, { merge: true });
+      // NOTE: when you wire the real upload, append the audio file Blob too.
 
       const { storyId } = await uploadToMake(form);
       
@@ -213,8 +224,6 @@ export default function Tell() {
           </BodyText>
         </View>
 
-
-
         {/* Permission Denied Panel */}
         {permissionDenied && (
           <View style={{
@@ -231,7 +240,6 @@ export default function Tell() {
                 title="Open Settings"
                 variant="secondary"
                 onPress={() => {
-                  // In a real app, this would open system settings
                   Alert.alert('Open Settings', 'Please enable microphone access in your device settings.');
                 }}
               />
@@ -355,7 +363,7 @@ export default function Tell() {
               <Button variant="secondary" title="Re-Record" onPress={() => withAccess(handleDelete)} />
               <Button variant="primary" title={uploading ? 'Saving...' : 'Save'} onPress={() => withAccess(handleSave)} disabled={uploading || (!BUILD_ALLOW_TELL && !hasAccess)} />
             </View>
-      </View>
+          </View>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>

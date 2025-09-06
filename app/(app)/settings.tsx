@@ -1,14 +1,13 @@
 // app/(app)/settings.tsx
 import type { Href } from 'expo-router';
 import { useRouter } from 'expo-router';
-import React from 'react';
 import { Alert, Linking, Platform, Pressable, ScrollView, Share, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useUser } from '@clerk/clerk-expo';
 import { theme } from '../../lib/theme';
 import BodyText from '../../primitives/BodyText';
 import Heading from '../../primitives/Heading';
-import { useAuth } from '../../providers/AuthProvider';
 
 // TODO: set your real IDs before release
 const APP_STORE_ID = '0000000000';      // e.g. 1234567890
@@ -50,7 +49,8 @@ function Row({
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, isSignedIn } = useUser();
+  if (!isSignedIn) { router.replace('/(auth)/sign-in'); return null; }
 
   const go = (to: Href) => router.push(to);
 

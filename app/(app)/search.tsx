@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import React from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Keyboard,
   Pressable,
@@ -12,55 +13,78 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-// 👇 correct relative paths for a file at app/(app)/search.tsx
+import { useUser } from '@clerk/clerk-expo';
 import { db } from '../../lib/firebase';
 import { theme } from '../../lib/theme';
 import BodyText from '../../primitives/BodyText';
 import Heading from '../../primitives/Heading';
 import ListCard from '../../primitives/ListCard';
-import { useAuth } from '../../providers/AuthProvider';
 
 type StoryItem = {
   id: string;
   title?: string;
   status?: 'queued' | 'transcribing' | 'analyzing' | 'ready' | 'failed';
-  createdAt?: any; // Firestore timestamp or ISO
+  createdAt?: any; // Firestore Timestamp | {seconds:number} | ISO string
 };
 
 export default function Search() {
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, isSignedIn, isLoaded } = useUser();
+  React.useEffect(() => {
+    if (isLoaded && !isSignedIn) router.replace('/(auth)/sign-in');
+  }, [isLoaded, isSignedIn]);
+  if (!isLoaded || !isSignedIn) return null;
 
   const [allStories, setAllStories] = React.useState<StoryItem[]>([]);
   const [filteredStories, setFilteredStories] = React.useState<StoryItem[]>([]);
   const [searchQuery, setSearchQuery] = React.useState('');
+  const [initialLoading, setInitialLoading] = React.useState(true);
   const [debounceTimeout, setDebounceTimeout] = React.useState<
     ReturnType<typeof setTimeout> | null
   >(null);
 
-  // subscribe once to user's stories
+  // Subscribe once to user's stories (ordered by createdAt desc)
   React.useEffect(() => {
     if (!user) return;
-    const q = query(
-      collection(db, `users/${user.uid}/vaultentry`),
-      orderBy('createdAt', 'desc'),
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      const items: StoryItem[] = [];
-      snap.forEach((doc) => items.push({ id: doc.id, ...(doc.data() as any) }));
-      setAllStories(items);
-      setFilteredStories(items);
-    });
-    return unsub;
+    console.log('[search] listen path:', 'users', user.id, 'vaultentry');
+    let unsub: (() => void) | undefined;
+    try {
+      const qy = query(
+        collection(db, `users/${user.id}/vaultentry`),
+        orderBy('createdAt', 'desc'),
+      );
+      unsub = onSnapshot(qy, (snap) => {
+        const items: StoryItem[] = [];
+        snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
+        setAllStories(items);
+        setFilteredStories(items.slice(0, 10));
+        setInitialLoading(false);
+      }, (err) => console.error('[search] onSnapshot error (ordered):', err));
+    } catch (e) {
+      console.warn('[search] falling back to unordered snapshot (likely index missing)', e);
+      unsub = onSnapshot(
+        collection(db, `users/${user.id}/vaultentry`),
+        (snap) => {
+          const items: StoryItem[] = [];
+          snap.forEach((d) => items.push({ id: d.id, ...(d.data() as any) }));
+          setAllStories(items);
+          setFilteredStories(items.slice(0, 10));
+          setInitialLoading(false);
+        },
+        (err) => console.error('[search] onSnapshot error (unordered):', err),
+      );
+    }
+    return () => unsub && unsub();
   }, [user]);
 
-  // debounce filter
+  // Debounce filter by 200ms
   React.useEffect(() => {
     if (debounceTimeout) clearTimeout(debounceTimeout);
     const t = setTimeout(() => {
       const q = searchQuery.trim().toLowerCase();
       if (!q) {
-        setFilteredStories(allStories);
+        // Empty query → recent 10
+        setFilteredStories(allStories.slice(0, 10));
       } else {
         setFilteredStories(
           allStories.filter((item) =>
@@ -120,11 +144,17 @@ export default function Search() {
             padding: theme.spacing.m,
             backgroundColor: theme.colors.bgAlt,
           }}
+          placeholderTextColor={`${theme.colors.text}80`}
         />
       </View>
 
-      {/* List / Empty */}
-      {filteredStories.length === 0 ? (
+      {/* First-load skeleton */}
+      {initialLoading ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator />
+        </View>
+      ) : filteredStories.length === 0 && searchQuery.trim() ? (
+        // Empty result (only when user typed something)
         <BodyText style={{ textAlign: 'center', marginTop: theme.spacing.xl }}>
           No matches.
         </BodyText>
@@ -143,7 +173,8 @@ export default function Search() {
               meta={formatDate(item.createdAt)}
               onPress={() => {
                 if (item.status === 'ready') {
-                  router.push(`/story/${item.id}`);
+                  // Your structure is app/(app)/story/[id].tsx → use pathname+params form
+                  router.push({ pathname: '/story/[id]', params: { id: item.id } });
                 } else {
                   router.push({ pathname: '/processing', params: { storyId: item.id } });
                 }

@@ -1,9 +1,13 @@
+// app/(app)/vault/index.tsx
+import { useUser } from '@clerk/clerk-expo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
+import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import React from 'react';
 import { FlatList, Pressable, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { db } from '../../../lib/firebase';
 import { theme } from '../../../lib/theme';
 import BodyText from '../../../primitives/BodyText';
 import Heading from '../../../primitives/Heading';
@@ -15,32 +19,106 @@ type StoryItem = {
   id: string;
   title?: string | null;
   createdAt?: string | null; // ISO string
-
 };
 
 export default function VaultHome() {
   const router = useRouter();
+  const { user, isLoaded, isSignedIn } = useUser();
   const { active: entitled } = useEntitlement();
   const hasAccess = entitled;
+
+  // Auth guard - redirect after Clerk is loaded
+  // Auth guard - redirect after Clerk is loaded
+React.useEffect(() => {
+  if (isLoaded && isSignedIn) {
+    console.log('[clerk] user.id =', user?.id); // ✅ safe to log here
+  }
+
+  if (isLoaded && !isSignedIn) {
+    router.replace('/(auth)/sign-in');
+  }
+}, [isLoaded, isSignedIn, user, router]);
 
   // --- Streak state ---
   const [streak, setStreak] = React.useState<number>(1);
 
-  // --- Stories state (placeholder until Firestore is wired) ---
+  // --- Stories state (from Firestore) ---
   const [stories, setStories] = React.useState<StoryItem[]>([]);
   // --- DEV ONLY: let stories open even without entitlement ---
   const BUILD_OPEN_STORY = true; // set to false before shipping
 
-
   // Focus: update streak + refresh stories
   useFocusEffect(React.useCallback(() => { updateStreak(); }, []));
+
+  // --- Firestore listener with index fallback (NO extra files) ---
   React.useEffect(() => {
-    // temp placeholder data until Firestore wiring
-    setStories((prev) => prev.length ? prev : [
-      { id: 'a', title: 'Untitled', createdAt: null },
-      { id: 'b', title: 'Untitled', createdAt: null },
-    ]);
-  }, []);
+    if (!user) return;
+
+    const colRef = collection(db, `users/${user.id}/vaultentry`);
+    const orderedQ = query(colRef, orderBy('createdAt', 'desc'));
+
+    // map snapshot → state (shared)
+    const mapAndSet = (snap: any, sortLocally: boolean) => {
+      const items: StoryItem[] = [];
+      snap.forEach((d: any) => {
+        const data = d.data() || {};
+        const iso =
+          data?.createdAt?.toDate?.()?.toISOString?.() ??
+          (typeof data?.createdAt === 'string' ? data.createdAt : null);
+        items.push({
+          id: d.id,
+          title: data.title || 'Untitled',
+          createdAt: iso,
+        });
+      });
+
+      if (sortLocally) {
+        items.sort((a, b) => {
+          const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
+          const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
+          return tb - ta; // desc
+        });
+      }
+
+      setStories(items);
+    };
+
+    let orderedUnsub: (() => void) | null = null;
+    let fallbackUnsub: (() => void) | null = null;
+
+    try {
+      orderedUnsub = onSnapshot(
+        orderedQ,
+        (snap) => mapAndSet(snap, /*sortLocally*/ false),
+        (err) => {
+          // Missing composite/collection index → fall back to unordered + local sort
+          if ((err as any)?.code === 'failed-precondition') {
+            console.warn('[vault] Missing index for createdAt; falling back to unordered snapshot.', err);
+            fallbackUnsub = onSnapshot(
+              colRef,
+              (snap) => mapAndSet(snap, /*sortLocally*/ true),
+              (e) => console.error('[vault] onSnapshot error (unordered fallback):', e)
+            );
+          } else {
+            console.error('[vault] onSnapshot error (ordered):', err);
+          }
+        }
+      );
+    } catch (e) {
+      // Extreme edge: if constructing ordered listener throws, still try unordered
+      console.warn('[vault] Exception when creating ordered snapshot; using unordered fallback.', e);
+      fallbackUnsub = onSnapshot(
+        colRef,
+        (snap) => mapAndSet(snap, /*sortLocally*/ true),
+        (err) => console.error('[vault] onSnapshot error (unordered via catch):', err)
+      );
+    }
+
+    return () => {
+      orderedUnsub?.();
+      fallbackUnsub?.();
+    };
+  }, [user]);
 
   const todayKey = React.useMemo(() => {
     const now = new Date();
@@ -76,6 +154,7 @@ export default function VaultHome() {
     await AsyncStorage.setItem('vault.lastOpenISO', today.toISOString());
     await AsyncStorage.setItem('vault.currentStreak', String(nextStreak));
   }
+
   function formatCreatedAt(v: any) {
     try {
       if (v?.toDate) return v.toDate().toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
@@ -142,25 +221,25 @@ export default function VaultHome() {
 
         {/* Story list */}
         <FlatList
-  data={stories}
-  keyExtractor={(item) => item.id}
-  ItemSeparatorComponent={() => <View style={{ height: theme.spacing.m }} />}
-  contentContainerStyle={{ paddingTop: theme.spacing.m, paddingBottom: theme.spacing.xl }}
-  renderItem={({ item }) => (
-    <ListCard
-      testID={`vault-story-item-${item.id}`}
-      title={item.title || 'Untitled'}
-      meta={formatCreatedAt(item.createdAt)}
-      onPress={() => {
-        if (BUILD_OPEN_STORY || hasAccess) {
-          router.push(`/story/${item.id}`);
-        } else {
-          router.replace('/trial/paywall');
-        }
-      }}
-    />
-  )}
-/>
+          data={stories}
+          keyExtractor={(item) => item.id}
+          ItemSeparatorComponent={() => <View style={{ height: theme.spacing.m }} />}
+          contentContainerStyle={{ paddingTop: theme.spacing.m, paddingBottom: theme.spacing.xl }}
+          renderItem={({ item }) => (
+            <ListCard
+              testID={`vault-story-item-${item.id}`}
+              title={item.title || 'Untitled'}
+              meta={formatCreatedAt(item.createdAt)}
+              onPress={() => {
+                if (BUILD_OPEN_STORY || hasAccess) {
+                  router.push(`/story/${item.id}`);
+                } else {
+                  router.replace('/trial/paywall');
+                }
+              }}
+            />
+          )}
+        />
       </View>
     </SafeAreaView>
   );

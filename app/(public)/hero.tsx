@@ -2,12 +2,15 @@
 // Context: Expo + expo-router; styling via lib/theme.ts.
 // Guards: No raw hex; SafeArea; public route (no auth gate).
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import React from 'react';
 import { ImageBackground, Pressable, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { markHeroSeen } from '../../lib/firstRun';
 import { theme } from '../../lib/theme';
+
+async function markHeroSeen() {
+  await AsyncStorage.setItem('wt_hero_seen', '1');
+}
 
 // If your file is elsewhere, adjust the path:
 const bg = require('../../assets/images/hero.png');

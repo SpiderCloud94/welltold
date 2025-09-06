@@ -1,20 +1,21 @@
 // app/(public)/about.tsx
+import type { Href } from 'expo-router';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useUser } from '@clerk/clerk-expo';
 import { theme } from '../../lib/theme';
 import Heading from '../../primitives/Heading';
 
-type RowItem = { id: string; label: string; icon: string; to: string };
+type RowItem = { id: string; label: string; icon: string; to: Href };
 
 const ROWS: RowItem[] = [
-  { id: 'what',   label: 'What Our App Does',     icon: 'ℹ️', to: '/(public)/whatourappdoes' },
-  { id: 'faq',    label: 'FAQ',                   icon: '❓', to: '/(public)/faq' },
-  { id: 'privacy',label: 'Privacy Policy',        icon: '🛡️', to: '/(public)/privacy' },
-  { id: 'terms',  label: 'Terms of Service',      icon: '📄', to: '/(public)/terms' },
-  { id: 'legal',  label: 'Legal Acknowledgment',  icon: '📑', to: '/(public)/legalacknowledgment' },
+  { id: 'what',   label: 'What Our App Does',     icon: 'ℹ️', to: '/(public)/whatourappdoes' as Href },
+  { id: 'faq',    label: 'FAQ',                   icon: '❓', to: '/(public)/faq' as Href },
+  { id: 'privacy',label: 'Privacy Policy',        icon: '🛡️', to: '/(public)/privacy' as Href },
+  { id: 'terms',  label: 'Terms of Service',      icon: '📄', to: '/(public)/terms' as Href },
+  { id: 'legal',  label: 'Legal Acknowledgment',  icon: '📑', to: '/(public)/legalacknowledgment' as Href },
 ];
 
 function Row({ icon, label, onPress }: { icon: string; label: string; onPress: () => void }) {
@@ -41,12 +42,22 @@ function Row({ icon, label, onPress }: { icon: string; label: string; onPress: (
 export default function About() {
   const router = useRouter();
   const { from } = useLocalSearchParams<{ from?: string }>();
+  const { isSignedIn } = useUser();
 
-  // back arrow routing rules
+  // Pretyped routes so router.push(...) accepts them without errors
+  const SETTINGS_TAB: Href = '/(app)/(tabs)/settings';
+  const AGREE: Href = '/(public)/agree';
+  const SIGN_IN: Href = '/(auth)/sign-in';
+
+  // Back rules:
+  // - If explicitly told, honor it.
+  // - Else if authed → back to Settings tab.
+  // - Else → sign-in.
   const handleBack = () => {
-    if (from === 'settings') return router.push('/(app)/settings' as const);
-    if (from === 'onboarding') return router.push('/(public)/agree' as const);
-    return router.push('/(public)/login' as const);
+    if (from === 'settings') { router.push(SETTINGS_TAB); return; }
+    if (from === 'onboarding') { router.push(AGREE); return; }
+    if (isSignedIn) { router.push(SETTINGS_TAB); return; }
+    router.push(SIGN_IN);
   };
 
   return (
@@ -80,7 +91,7 @@ export default function About() {
       {/* Rows */}
       <ScrollView contentContainerStyle={{ paddingHorizontal: theme.spacing.m, paddingBottom: theme.spacing.xl }}>
         {ROWS.map((row) => (
-          <Row key={row.id} icon={row.icon} label={row.label} onPress={() => router.push(row.to as any)} />
+          <Row key={row.id} icon={row.icon} label={row.label} onPress={() => router.push(row.to)} />
         ))}
 
         {/* Footer */}
