@@ -1,3 +1,4 @@
+// app/tell.tsx
 // DEV ONLY: allow Tell without entitlement (flip to false before shipping)
 const BUILD_ALLOW_TELL = true;
 
@@ -11,22 +12,43 @@ import { useUser } from '@clerk/clerk-expo';
 import { validateAudioFile } from '../../lib/config';
 import { uploadToMake } from '../../lib/make';
 import { startRecording, stopRecordingGetFile } from '../../lib/recording';
-// ❌ remove resolveUid (Firebase-era). Clerk gives user.id directly.
-// import { resolveUid } from '../../lib/runtime';
 import { theme } from '../../lib/theme';
 import BodyText from '../../primitives/BodyText';
 import Button from '../../primitives/Button';
 import Heading from '../../primitives/Heading';
 import { useEntitlement } from '../../providers/EntitlementsProvider';
 
+// 🔥 Firestore (client) – used only to create the shell doc
+import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { db } from '../../lib/firebase'; // <- your existing Firestore init
+
 type RecordingState = 'idle' | 'recording' | 'review';
+
+// Small, safe ID generator (no dependency)
+function createStoryId(): string {
+  // 16 chars of time+random, URL-safe
+  const t = Date.now().toString(36);
+  const r = Math.random().toString(36).slice(2, 10);
+  return `${t}-${r}`;
+}
+
+// ✅ Persisted device id so Make can rate-limit & track properly
+async function getOrCreateDeviceId(): Promise<string> {
+  const KEY = 'wt.deviceId';
+  let id = await AsyncStorage.getItem(KEY);
+  if (!id) {
+    id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    await AsyncStorage.setItem(KEY, id);
+  }
+  return id;
+}
 
 export default function Tell() {
   const router = useRouter();
   const { user, isSignedIn } = useUser();
   if (!isSignedIn) { router.replace('/(auth)/sign-in'); return null; }
   const { active: hasAccess } = useEntitlement();
-  
+
   const [context, setContext] = React.useState('');
   const [recordingState, setRecordingState] = React.useState<RecordingState>('idle');
   const [recordingTime, setRecordingTime] = React.useState(0);
@@ -39,51 +61,40 @@ export default function Tell() {
 
   const canUsePaid = BUILD_ALLOW_TELL || hasAccess;
 
-  // Timer for recording
+  // ---- timers / context persistence (unchanged) ----
   React.useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
+    // store the id as a number to avoid DOM/Node type unions
+    let timerId: number | null = null;
+  
     if (recordingState === 'recording') {
-      interval = setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
+      // setInterval returns a number in RN; the cast keeps TS happy across envs
+      timerId = (setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+      }, 1000) as unknown) as number;
     }
+  
     return () => {
-      if (interval) clearInterval(interval);
+      if (timerId !== null) {
+        clearInterval(timerId);
+      }
     };
   }, [recordingState]);
 
-  // Load saved context
-  React.useEffect(() => {
-    loadSavedContext();
-  }, []);
-
-  // Save context as user types
-  React.useEffect(() => {
-    if (context) {
-      AsyncStorage.setItem('pendingContext', context);
-    }
-  }, [context]);
+  React.useEffect(() => { loadSavedContext(); }, []);
+  React.useEffect(() => { if (context) AsyncStorage.setItem('pendingContext', context); }, [context]);
 
   const loadSavedContext = async () => {
-    try {
-      const saved = await AsyncStorage.getItem('pendingContext');
-      if (saved) setContext(saved);
-    } catch (error) {
-      console.error('Failed to load context:', error);
-    }
+    try { const saved = await AsyncStorage.getItem('pendingContext'); if (saved) setContext(saved); }
+    catch (e) { console.error('Failed to load context:', e); }
   };
 
   const clearSavedContext = async () => {
-    try {
-      await AsyncStorage.removeItem('pendingContext');
-    } catch (error) {
-      console.error('Failed to clear context:', error);
-    }
+    try { await AsyncStorage.removeItem('pendingContext'); }
+    catch (e) { console.error('Failed to clear context:', e); }
   };
 
   function withAccess(action: () => void) {
-    if (canUsePaid) action();
-    else router.replace('/trial/paywall');
+    if (canUsePaid) action(); else router.replace('/trial/paywall');
   }
 
   const handleMicPress = async () => {
@@ -95,9 +106,7 @@ export default function Tell() {
         setRecordingTime(0);
       } catch (error) {
         console.error('Recording failed:', error);
-        if (error instanceof Error && error.message.includes('Permission')) {
-          setPermissionDenied(true);
-        }
+        if (error instanceof Error && error.message.includes('Permission')) setPermissionDenied(true);
       }
     } else if (recordingState === 'recording') {
       try {
@@ -120,44 +129,55 @@ export default function Tell() {
     setUploadError(null);
 
     try {
-      // Validate audio
+      // 1) Validate audio
       const validation = validateAudioFile(audioUri, audioDuration);
       if (!validation.valid) {
         setUploadError(validation.error || 'Invalid audio file');
         return;
       }
 
-      // ✅ Clerk user id (not Firebase uid)
+      // 2) Get Clerk user id
       const uid = user?.id;
-      if (!uid) { 
-        router.replace('/(auth)/sign-in'); 
-        return; 
-      }
+      if (!uid) { router.replace('/(auth)/sign-in'); return; }
 
+      // 3) Generate storyId and create the shell Firestore doc NOW
+      const storyId = createStoryId();
+      await setDoc(
+        doc(db, 'users', uid, 'vaultentry', storyId),
+        {
+          title: reviewTitle || 'Untitled Story',
+          status: 'queued',                  // 👈 chips can show this immediately
+          durationSec: audioDuration || 0,
+          contextbox: context || '',
+          createdAt: serverTimestamp(),      // server time
+        },
+        { merge: true }
+      );
+
+      // 4) Build multipart form for Make (with the SAME storyId)
       const form = new FormData();
       form.append('userId', uid);
+      form.append('storyId', storyId);                      // 👈 IMPORTANT
       form.append('title', reviewTitle || 'Untitled Story');
       form.append('durationSec', String(audioDuration || 0));
       form.append('contextbox', context || '');
       form.append('clientId', String(Date.now()));
       form.append('createdAtISO', new Date().toISOString());
-      // If you create the Firestore doc client-side, ensure createdAt is a server Timestamp.
-      // Example (uncomment if/where you write to Firestore here):
-      // import { setDoc, doc, serverTimestamp } from 'firebase/firestore';
-      // await setDoc(doc(db, 'users', user.id, 'vaultentry', storyId), {
-      //   title: reviewTitle || 'Untitled Story',
-      //   status: 'queued',
-      //   createdAt: serverTimestamp(),
-      // }, { merge: true });
-      // NOTE: when you wire the real upload, append the audio file Blob too.
 
-      const { storyId } = await uploadToMake(form);
-      
-      // Clear saved context on successful upload
+      // ✅ include a real device id
+      const deviceId = await getOrCreateDeviceId();
+      form.append('deviceId', deviceId);
+
+      // Attach the file (React Native Blob cast)
+      // @ts-expect-error react-native FormData file
+      form.append('file', { uri: audioUri, name: 'story.m4a', type: 'audio/m4a' });
+
+      // 5) Fire-and-forget upload to Make (we don't need anything back)
+      await uploadToMake(form);
+
+      // 6) Clear context and bounce straight to the Story page
       await clearSavedContext();
-      
-      // Navigate to processing
-      router.replace(`/processing?storyId=${storyId}`);
+      router.replace(`/story/${storyId}`);
     } catch (error) {
       console.error('Upload failed:', error);
       setUploadError(error instanceof Error ? error.message : 'Upload failed');
@@ -174,27 +194,13 @@ export default function Tell() {
     setUploadError(null);
   };
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const getMicButtonLabel = () => {
-    if (recordingState === 'idle') return 'Tap to Record';
-    if (recordingState === 'recording') return 'Tap to Stop';
-    return 'Recording Complete';
-  };
-
-  const tryAgainPermission = () => {
-    setPermissionDenied(false);
-    withAccess(handleMicPress);
-  };
+  const formatTime = (s: number) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
+  const getMicButtonLabel = () => (recordingState === 'idle' ? 'Tap to Record' : recordingState === 'recording' ? 'Tap to Stop' : 'Recording Complete');
+  const tryAgainPermission = () => { setPermissionDenied(false); withAccess(handleMicPress); };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: theme.spacing.m, paddingBottom: theme.spacing.xl }}>
-        {/* Header */}
         <Heading size="xl" style={{ textAlign: 'center', marginBottom: theme.spacing.xl }}>
           Ready to tell your story?
         </Heading>

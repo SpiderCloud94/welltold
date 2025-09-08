@@ -50,6 +50,12 @@ export default function StoryDetail() {
 
   if (!isLoaded || !isSignedIn) return null;
 
+  // ✅ guard if storyId is missing
+  if (!storyId) {
+    router.replace('/');
+    return null;
+  }
+
   const [story, setStory] = React.useState<StoryData | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [sound, setSound] = React.useState<Audio.Sound | null>(null);
@@ -58,7 +64,7 @@ export default function StoryDetail() {
   const [duration, setDuration] = React.useState(0);
   const [feedbackExpanded, setFeedbackExpanded] = React.useState(false);
   const [transcriptExpanded, setTranscriptExpanded] = React.useState(false);
-  const [reloadKey, setReloadKey] = React.useState(0); // ✅ replaces undefined fetchStoryData
+  const [reloadKey, setReloadKey] = React.useState(0);
 
   // Subscribe to story document from Firestore
   React.useEffect(() => {
@@ -68,11 +74,20 @@ export default function StoryDetail() {
     const unsub = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
+        // ✅ feedback parsing
+        const rawFeedback = data.feedback;
+        let feedback: { structure?: string; creative?: string } | undefined = undefined;
+        try {
+          feedback = typeof rawFeedback === 'string' ? JSON.parse(rawFeedback) : rawFeedback;
+        } catch {
+          feedback = undefined;
+        }
+
         setStory({
           id: snap.id,
           title: data.title || 'Untitled',
           recordingUrl: data.recordingUrl,
-          feedback: data.feedback,
+          feedback,
           transcript: data.transcript,
           status: data.status || 'queued',
           durationSec: data.durationSec,
@@ -139,7 +154,6 @@ export default function StoryDetail() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          // TODO: hook up Firestore + storage deletes when ready
           router.replace('/');
         },
       },
@@ -238,7 +252,7 @@ export default function StoryDetail() {
                 We couldn't finish processing this story.
               </BodyText>
               <View style={{ flexDirection: 'row', gap: theme.spacing.m }}>
-                <Button title="Try Again" variant="secondary" onPress={() => setReloadKey(k => k + 1)} />{/* ✅ retry */}
+                <Button title="Try Again" variant="secondary" onPress={() => setReloadKey(k => k + 1)} />
                 <Button title="Back to Vault" variant="secondary" onPress={() => router.replace('/')} />
               </View>
             </View>
