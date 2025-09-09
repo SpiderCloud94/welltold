@@ -18,21 +18,23 @@ import Button from '../../primitives/Button';
 import Heading from '../../primitives/Heading';
 import { useEntitlement } from '../../providers/EntitlementsProvider';
 
+// ✅ duration fix (unchanged)
+import { Audio } from 'expo-av';
+// ✅ NEW: for zero-byte guard
+import * as FileSystem from 'expo-file-system';
+
 // 🔥 Firestore (client) – used only to create the shell doc
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { db } from '../../lib/firebase'; // <- your existing Firestore init
+import { db } from '../../lib/firebase';
 
 type RecordingState = 'idle' | 'recording' | 'review';
 
-// Small, safe ID generator (no dependency)
 function createStoryId(): string {
-  // 16 chars of time+random, URL-safe
   const t = Date.now().toString(36);
   const r = Math.random().toString(36).slice(2, 10);
   return `${t}-${r}`;
 }
 
-// ✅ Persisted device id so Make can rate-limit & track properly
 async function getOrCreateDeviceId(): Promise<string> {
   const KEY = 'wt.deviceId';
   let id = await AsyncStorage.getItem(KEY);
@@ -61,23 +63,12 @@ export default function Tell() {
 
   const canUsePaid = BUILD_ALLOW_TELL || hasAccess;
 
-  // ---- timers / context persistence (unchanged) ----
   React.useEffect(() => {
-    // store the id as a number to avoid DOM/Node type unions
     let timerId: number | null = null;
-  
     if (recordingState === 'recording') {
-      // setInterval returns a number in RN; the cast keeps TS happy across envs
-      timerId = (setInterval(() => {
-        setRecordingTime((prev) => prev + 1);
-      }, 1000) as unknown) as number;
+      timerId = (setInterval(() => { setRecordingTime((p) => p + 1); }, 1000) as unknown) as number;
     }
-  
-    return () => {
-      if (timerId !== null) {
-        clearInterval(timerId);
-      }
-    };
+    return () => { if (timerId !== null) clearInterval(timerId); };
   }, [recordingState]);
 
   React.useEffect(() => { loadSavedContext(); }, []);
@@ -112,7 +103,21 @@ export default function Tell() {
       try {
         const result = await stopRecordingGetFile();
         setAudioUri(result.uri);
-        setAudioDuration(result.duration);
+
+        // ⬇️ duration read (unchanged)
+        try {
+          const { sound, status } = await Audio.Sound.createAsync(
+            { uri: result.uri },
+            { shouldPlay: false }
+          );
+          const durMs = ('durationMillis' in status && status.durationMillis) ? status.durationMillis : 0;
+          const durSec = Math.max(0, Math.round(durMs / 1000));
+          setAudioDuration(durSec);
+          await sound.unloadAsync();
+        } catch {
+          setAudioDuration(result.duration || 0);
+        }
+
         setRecordingState('review');
         setRecordingTime(0);
       } catch (error) {
@@ -129,53 +134,59 @@ export default function Tell() {
     setUploadError(null);
 
     try {
-      // 1) Validate audio
+      // ✅ NEW: zero-byte guard before doing anything else
+      const info = await FileSystem.getInfoAsync(audioUri);
+      if (!info.exists || (info.size ?? 0) === 0) {
+        setUploadError('Recording failed. File is empty.');
+        setRecordingState('idle');
+        return;
+      }
+
+      // Validate audio
       const validation = validateAudioFile(audioUri, audioDuration);
       if (!validation.valid) {
         setUploadError(validation.error || 'Invalid audio file');
         return;
       }
 
-      // 2) Get Clerk user id
       const uid = user?.id;
       if (!uid) { router.replace('/(auth)/sign-in'); return; }
 
-      // 3) Generate storyId and create the shell Firestore doc NOW
       const storyId = createStoryId();
       await setDoc(
         doc(db, 'users', uid, 'vaultentry', storyId),
         {
           title: reviewTitle || 'Untitled Story',
-          status: 'queued',                  // 👈 chips can show this immediately
+          status: 'queued',
           durationSec: audioDuration || 0,
           contextbox: context || '',
-          createdAt: serverTimestamp(),      // server time
+          createdAt: serverTimestamp(),
         },
         { merge: true }
       );
 
-      // 4) Build multipart form for Make (with the SAME storyId)
       const form = new FormData();
       form.append('userId', uid);
-      form.append('storyId', storyId);                      // 👈 IMPORTANT
+      form.append('storyId', storyId);
       form.append('title', reviewTitle || 'Untitled Story');
       form.append('durationSec', String(audioDuration || 0));
       form.append('contextbox', context || '');
       form.append('clientId', String(Date.now()));
       form.append('createdAtISO', new Date().toISOString());
 
-      // ✅ include a real device id
       const deviceId = await getOrCreateDeviceId();
       form.append('deviceId', deviceId);
 
-      // Attach the file (React Native Blob cast)
+      // ✅ NEW: explicit filename + mimeType fields
+      form.append('filename', 'story.m4a');
+      form.append('mimeType', 'audio/m4a');
+
+      // RN file part (kept the same)
       // @ts-expect-error react-native FormData file
       form.append('file', { uri: audioUri, name: 'story.m4a', type: 'audio/m4a' });
 
-      // 5) Fire-and-forget upload to Make (we don't need anything back)
       await uploadToMake(form);
 
-      // 6) Clear context and bounce straight to the Story page
       await clearSavedContext();
       router.replace(`/story/${storyId}`);
     } catch (error) {
@@ -232,28 +243,13 @@ export default function Tell() {
 
         {/* Permission Denied Panel */}
         {permissionDenied && (
-          <View style={{
-            backgroundColor: theme.colors.error,
-            borderRadius: theme.radii.md,
-            padding: theme.spacing.l,
-            marginBottom: theme.spacing.l,
-          }}>
+          <View style={{ backgroundColor: theme.colors.error, borderRadius: theme.radii.md, padding: theme.spacing.l, marginBottom: theme.spacing.l }}>
             <BodyText style={{ color: theme.colors.bgAlt, marginBottom: theme.spacing.m }}>
               Microphone access is required to record your story.
             </BodyText>
             <View style={{ flexDirection: 'row', gap: theme.spacing.m }}>
-              <Button
-                title="Open Settings"
-                variant="secondary"
-                onPress={() => {
-                  Alert.alert('Open Settings', 'Please enable microphone access in your device settings.');
-                }}
-              />
-              <Button
-                title="Try Again"
-                variant="secondary"
-                onPress={tryAgainPermission}
-              />
+              <Button title="Open Settings" variant="secondary" onPress={() => Alert.alert('Open Settings', 'Please enable microphone access in your device settings.')} />
+              <Button title="Try Again" variant="secondary" onPress={tryAgainPermission} />
             </View>
           </View>
         )}
@@ -264,45 +260,21 @@ export default function Tell() {
             onPress={() => withAccess(handleMicPress)}
             disabled={recordingState === 'review'}
             style={({ pressed }) => ({
-              width: 120,
-              height: 120,
-              borderRadius: 60,
+              width: 120, height: 120, borderRadius: 60,
               backgroundColor: recordingState === 'recording' ? theme.colors.error : theme.colors.primary,
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginBottom: theme.spacing.m,
-              opacity: pressed ? 0.9 : 1,
-              ...theme.shadows.cardMd,
+              alignItems: 'center', justifyContent: 'center',
+              marginBottom: theme.spacing.m, opacity: pressed ? 0.9 : 1, ...theme.shadows.cardMd,
             })}
           >
-            <Text style={{ fontSize: 48, color: theme.colors.bgAlt }}>
-              {recordingState === 'recording' ? '⏹' : '🎤'}
-            </Text>
+            <Text style={{ fontSize: 48, color: theme.colors.bgAlt }}>{recordingState === 'recording' ? '⏹' : '🎤'}</Text>
           </Pressable>
-          
-          <BodyText style={{ textAlign: 'center', marginBottom: theme.spacing.xs }}>
-            {getMicButtonLabel()}
-          </BodyText>
-          
-          <Text style={[{ fontSize: 20, fontWeight: '600' as const, lineHeight: 26 }, { color: theme.colors.text }]}>
-            {formatTime(recordingTime)}
-          </Text>
+          <BodyText style={{ textAlign: 'center', marginBottom: theme.spacing.xs }}>{getMicButtonLabel()}</BodyText>
+          <Text style={[{ fontSize: 20, fontWeight: '600' as const, lineHeight: 26 }, { color: theme.colors.text }]}>{formatTime(recordingTime)}</Text>
         </View>
 
         {/* Ready Ritual Link */}
-        <Pressable
-          onPress={() => router.push('/readyritual')}
-          style={{ alignItems: 'center', marginBottom: theme.spacing.xl }}
-        >
-          <View style={{
-            backgroundColor: theme.colors.bgAlt,
-            borderRadius: theme.radii.md,
-            padding: theme.spacing.l,
-            alignItems: 'center',
-            borderWidth: 1,
-            borderColor: theme.colors.btnBorder,
-            ...theme.shadows.cardSm,
-          }}>
+        <Pressable onPress={() => router.push('/readyritual')} style={{ alignItems: 'center', marginBottom: theme.spacing.xl }}>
+          <View style={{ backgroundColor: theme.colors.bgAlt, borderRadius: theme.radii.md, padding: theme.spacing.l, alignItems: 'center', borderWidth: 1, borderColor: theme.colors.btnBorder, ...theme.shadows.cardSm }}>
             <Text style={{ fontSize: 24, marginBottom: theme.spacing.xs }}>📖</Text>
             <BodyText style={{ fontWeight: '600' }}>Ready Ritual</BodyText>
           </View>
@@ -310,22 +282,13 @@ export default function Tell() {
       </ScrollView>
 
       {/* Review Dialog */}
-      <Modal
-        visible={recordingState === 'review'}
-        animationType="slide"
-        presentationStyle="pageSheet"
-      >
+      <Modal visible={recordingState === 'review'} animationType="slide" presentationStyle="pageSheet">
         <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
           <View style={{ flex: 1, padding: theme.spacing.l }}>
-            <Heading size="m" style={{ textAlign: 'center', marginBottom: theme.spacing.l }}>
-              Review Your Story
-            </Heading>
+            <Heading size="m" style={{ textAlign: 'center', marginBottom: theme.spacing.l }}>Review Your Story</Heading>
 
-            {/* Title Input */}
             <View style={{ marginBottom: theme.spacing.l }}>
-              <BodyText style={{ marginBottom: theme.spacing.xs, fontWeight: '600' }}>
-                Title
-              </BodyText>
+              <BodyText style={{ marginBottom: theme.spacing.xs, fontWeight: '600' }}>Title</BodyText>
               <TextInput
                 value={reviewTitle}
                 onChangeText={setReviewTitle}
@@ -333,38 +296,19 @@ export default function Tell() {
                   backgroundColor: theme.colors.bgAlt,
                   borderRadius: theme.radii.md,
                   padding: theme.spacing.l,
-                  borderWidth: 1,
-                  borderColor: theme.colors.btnBorder,
-                  ...theme.typography.body,
-                  color: theme.colors.text,
+                  borderWidth: 1, borderColor: theme.colors.btnBorder,
+                  ...theme.typography.body, color: theme.colors.text,
                 }}
                 placeholderTextColor={`${theme.colors.text}80`}
               />
             </View>
 
-            {/* Duration */}
-            <View style={{ marginBottom: theme.spacing.l }}>
-              <BodyText style={{ marginBottom: theme.spacing.xs, fontWeight: '600' }}>
-                Length
-              </BodyText>
-              <BodyText>{formatTime(audioDuration)}</BodyText>
-            </View>
-
-            {/* Error Display */}
             {uploadError && (
-              <View style={{
-                backgroundColor: theme.colors.error,
-                borderRadius: theme.radii.md,
-                padding: theme.spacing.m,
-                marginBottom: theme.spacing.l,
-              }}>
-                <BodyText style={{ color: theme.colors.bgAlt }}>
-                  {uploadError}
-                </BodyText>
+              <View style={{ backgroundColor: theme.colors.error, borderRadius: theme.radii.md, padding: theme.spacing.m, marginBottom: theme.spacing.l }}>
+                <BodyText style={{ color: theme.colors.bgAlt }}>{uploadError}</BodyText>
               </View>
             )}
 
-            {/* Action Buttons */}
             <View style={{ flexDirection:'row', justifyContent:'center', gap: theme.spacing.m, marginTop: theme.spacing.m }}>
               <Button variant="secondary" title="Re-Record" onPress={() => withAccess(handleDelete)} />
               <Button variant="primary" title={uploading ? 'Saving...' : 'Save'} onPress={() => withAccess(handleSave)} disabled={uploading || (!BUILD_ALLOW_TELL && !hasAccess)} />

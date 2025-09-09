@@ -2,7 +2,7 @@
 import { useUser } from '@clerk/clerk-expo';
 import { Audio } from 'expo-av';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { deleteDoc, doc, onSnapshot } from 'firebase/firestore';
 import React from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,11 +19,11 @@ type StoryData = {
   id: string;
   title?: string;
   recordingUrl?: string;
-  feedback?: { structure?: string; creative?: string };
+  feedback?: { structure?: string; creative?: string } | string;
   transcript?: string;
   createdAt?: any;
   durationSec?: number;
-  status: 'queued' | 'transcribing' | 'analyzing' | 'ready' | 'failed';
+  status: 'queued' | 'processing' | 'ready' | 'failed';
 };
 
 function formatDate(v: any) {
@@ -38,11 +38,10 @@ function formatDate(v: any) {
 export default function StoryDetail() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string | string[] }>();
-  const storyId = Array.isArray(params.id) ? params.id[0] : params.id; // ✅ sanitize
+  const storyId = Array.isArray(params.id) ? params.id[0] : params.id;
   const { user, isLoaded, isSignedIn } = useUser();
   const { active: hasEntitlement } = useEntitlement();
 
-  // Redirect only after Clerk is loaded
   React.useEffect(() => {
     if (!isLoaded) return;
     if (!isSignedIn) router.replace('/(auth)/sign-in');
@@ -50,7 +49,6 @@ export default function StoryDetail() {
 
   if (!isLoaded || !isSignedIn) return null;
 
-  // ✅ guard if storyId is missing
   if (!storyId) {
     router.replace('/');
     return null;
@@ -66,87 +64,144 @@ export default function StoryDetail() {
   const [transcriptExpanded, setTranscriptExpanded] = React.useState(false);
   const [reloadKey, setReloadKey] = React.useState(0);
 
-  // Subscribe to story document from Firestore
+  // Allow audio in iOS silent mode (tiny required setting)
+  React.useEffect(() => {
+    (async () => {
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          // >>> added
+          playThroughEarpieceAndroid: false,
+          shouldDuckAndroid: true,
+        });
+      } catch {}
+    })();
+  }, []);
+
   React.useEffect(() => {
     if (!isLoaded || !isSignedIn || !user || !storyId) return;
     const docRef = doc(db, 'users', user.id, 'vaultentry', String(storyId));
-    console.log('[story] listen path:', 'users', user.id, 'vaultentry', String(storyId));
-    const unsub = onSnapshot(docRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        // ✅ feedback parsing
-        const rawFeedback = data.feedback;
-        let feedback: { structure?: string; creative?: string } | undefined = undefined;
-        try {
-          feedback = typeof rawFeedback === 'string' ? JSON.parse(rawFeedback) : rawFeedback;
-        } catch {
-          feedback = undefined;
+    const unsub = onSnapshot(
+      docRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+
+          // normalize feedback
+          let feedback: any = undefined;
+          const rawFb = data.feedback;
+          if (typeof rawFb === 'string') {
+            try { feedback = JSON.parse(rawFb); } catch { feedback = rawFb; }
+          } else if (rawFb && typeof rawFb === 'object') {
+            feedback = rawFb;
+          }
+
+          // normalize transcript
+          let transcript: string | undefined;
+          const rawTx = data.transcript;
+          if (typeof rawTx === 'string') {
+            try {
+              const parsed = JSON.parse(rawTx);
+              transcript = typeof parsed === 'string' ? parsed : (parsed?.text ?? JSON.stringify(parsed));
+            } catch {
+              transcript = rawTx;
+            }
+          } else if (rawTx && typeof rawTx === 'object') {
+            transcript = rawTx.text ?? JSON.stringify(rawTx);
+          }
+
+          setStory({
+            id: snap.id,
+            title: data.title || 'Untitled',
+            recordingUrl: data.recordingUrl,
+            feedback,
+            transcript,
+            status: data.status || 'queued',
+            durationSec: data.durationSec,
+            createdAt: data.createdAt,
+          });
+        } else {
+          setStory({ id: storyId, title: 'Story Not Found', status: 'failed' } as StoryData);
         }
-
-        setStory({
-          id: snap.id,
-          title: data.title || 'Untitled',
-          recordingUrl: data.recordingUrl,
-          feedback,
-          transcript: data.transcript,
-          status: data.status || 'queued',
-          durationSec: data.durationSec,
-          createdAt: data.createdAt,
-        });
-      } else {
-        setStory({
-          id: storyId,
-          title: 'Story Not Found',
-          status: 'failed',
-        } as StoryData);
+        setLoading(false);
+      },
+      () => {
+        setStory({ id: storyId, title: 'Error Loading Story', status: 'failed' } as StoryData);
+        setLoading(false);
       }
-      setLoading(false);
-    }, (error) => {
-      console.error('[story] onSnapshot error:', error);
-      setStory({
-        id: storyId,
-        title: 'Error Loading Story',
-        status: 'failed',
-      } as StoryData);
-      setLoading(false);
-    });
-
+    );
     return () => unsub();
   }, [isLoaded, isSignedIn, user, storyId, reloadKey]);
 
-  // Unload audio on unmount
   React.useEffect(() => {
     return () => { if (sound) sound.unloadAsync().catch(() => {}); };
   }, [sound]);
 
-  const loadAudio = async () => {
-    if (!story?.recordingUrl) return;
+  // --- playback helpers ---
+  const loadAudio = async (): Promise<Audio.Sound | null> => {
+    if (!story?.recordingUrl) return null;
     try {
-      const { sound: s } = await Audio.Sound.createAsync({ uri: story.recordingUrl }, { shouldPlay: false });
+      const { sound: s, status } = await Audio.Sound.createAsync(
+        { uri: story.recordingUrl },
+        { shouldPlay: false }
+      );
       setSound(s);
+      // >>> added
+      await s.setIsMutedAsync(false);
+      await s.setVolumeAsync(1.0);
+      if ('isLoaded' in status && status.isLoaded) setDuration(status.durationMillis || 0);
+
       s.setOnPlaybackStatusUpdate((st) => {
         if ('isLoaded' in st && st.isLoaded) {
           setPosition(st.positionMillis || 0);
           setDuration(st.durationMillis || 0);
           setIsPlaying(!!st.isPlaying);
+          // when it finishes, reset to start so it can be replayed immediately
+          if ('didJustFinish' in st && st.didJustFinish) {
+            setIsPlaying(false);
+            setPosition(0);
+            s.setPositionAsync(0).catch(() => {});
+          }
         }
       });
+
+      return s;
     } catch (e) {
       console.error('Error loading audio:', e);
+      return null;
     }
   };
 
   const togglePlayback = async () => {
-    if (!sound) { await loadAudio(); return; }
-    if (isPlaying) await sound.pauseAsync();
-    else await sound.playAsync();
+    let s = sound;
+    if (!s) s = await loadAudio();
+    if (!s) return;
+
+    // If it's playing, restart from the beginning (auto "refresh")
+    if (isPlaying) {
+      try {
+        await s.stopAsync();
+      } catch {}
+      await s.setPositionAsync(0);
+      await s.playAsync();
+      return;
+    }
+
+    // If not playing and we're at (or past) the end, start from 0
+    if (duration > 0 && position >= Math.max(0, duration - 250)) {
+      await s.playFromPositionAsync(0);
+    } else {
+      await s.playAsync();
+    }
   };
 
+  // Re-record always goes to Tell page (no paywall gate here)
   const handleReRecord = () => {
-    if (hasEntitlement) router.push('/tell');
-    else router.replace('/trial/paywall');
+    router.push('/tell');
   };
 
+  // Delete Firestore doc, then return to Vault
   const handleDelete = () => {
     Alert.alert('Delete Story', 'Delete this story permanently?', [
       { text: 'Cancel', style: 'cancel' },
@@ -154,7 +209,15 @@ export default function StoryDetail() {
         text: 'Delete',
         style: 'destructive',
         onPress: async () => {
-          router.replace('/');
+          try {
+            const ref = doc(db, 'users', user!.id, 'vaultentry', String(storyId));
+            await deleteDoc(ref);
+          } catch (e) {
+            console.error('Delete failed:', e);
+          } finally {
+            try { if (sound) { await sound.stopAsync(); await sound.unloadAsync(); } } catch {}
+            router.replace('/');
+          }
         },
       },
     ]);
@@ -162,12 +225,7 @@ export default function StoryDetail() {
 
   const getStatusChip = () => {
     if (!story || story.status === 'ready') return null;
-    const statusText =
-      story.status === 'queued' ? 'Queued…' :
-      story.status === 'transcribing' ? 'Transcribing…' :
-      story.status === 'analyzing' ? 'Analyzing…' :
-      'Processing failed';
-
+    const statusText = story.status === 'failed' ? 'Processing failed' : 'processing…';
     return (
       <View style={{
         backgroundColor: story.status === 'failed' ? theme.colors.error : theme.colors.secondary,
@@ -186,6 +244,11 @@ export default function StoryDetail() {
     const s = Math.floor(ms / 1000);
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
+
+  const rightTimeLabel =
+    duration > 0
+      ? formatTime(duration)
+      : (story?.durationSec ? `${Math.floor(story.durationSec / 60)}:${String(story.durationSec % 60).padStart(2, '0')}` : '0:00');
 
   if (loading) {
     return (
@@ -285,8 +348,12 @@ export default function StoryDetail() {
                     <View style={{ height: 4, backgroundColor: theme.colors.primary, borderRadius: 2, width: duration > 0 ? `${(position / duration) * 100}%` : '0%' }} />
                   </View>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                    <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>{formatTime(position)}</Text>
-                    <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>{formatTime(duration)}</Text>
+                    <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>
+                      {formatTime(position)}
+                    </Text>
+                    <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>
+                      {rightTimeLabel}
+                    </Text>
                   </View>
                 </View>
               </View>
@@ -324,6 +391,8 @@ export default function StoryDetail() {
             <Accordion title="Feedback" expanded={feedbackExpanded} onToggle={() => setFeedbackExpanded(!feedbackExpanded)} testID="feedback-accordion">
               {story.status !== 'ready' ? (
                 <BodyText>Feedback not ready yet.</BodyText>
+              ) : typeof story.feedback === 'string' ? (
+                <BodyText>{story.feedback || 'No feedback available.'}</BodyText>
               ) : (
                 <View style={{ gap: theme.spacing.l }}>
                   <View>
@@ -341,7 +410,9 @@ export default function StoryDetail() {
 
           {/* Transcript */}
           <Accordion title="Transcript" expanded={transcriptExpanded} onToggle={() => setTranscriptExpanded(!transcriptExpanded)} testID="transcript-accordion">
-            {story.status !== 'ready' ? <BodyText>Transcript not ready yet.</BodyText> : <BodyText>{story.transcript || 'No transcript available.'}</BodyText>}
+            {story.status !== 'ready'
+              ? <BodyText>Transcript not ready yet.</BodyText>
+              : <BodyText>{story.transcript || 'No transcript available.'}</BodyText>}
           </Accordion>
         </ScrollView>
       </View>
