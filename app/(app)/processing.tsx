@@ -1,11 +1,11 @@
 // app/(app)/processing.tsx
+import { useUser } from '@clerk/clerk-expo';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import React from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useUser } from '@clerk/clerk-expo';
 import { db } from '../../lib/firebase';
 import { theme } from '../../lib/theme';
 import BodyText from '../../primitives/BodyText';
@@ -19,10 +19,10 @@ type VaultEntry = {
   title: string;
   status: ProcessingStatus;
   transcript?: string;
-  feedback?: any;
+  feedback?: unknown;
   recordingUrl?: string;
-  createdAt?: any;
-  updatedAt?: any;
+  createdAt?: unknown;
+  updatedAt?: unknown;
 };
 
 export default function Processing() {
@@ -30,7 +30,6 @@ export default function Processing() {
   const { storyId } = useLocalSearchParams<{ storyId?: string }>();
   const { user, isLoaded, isSignedIn } = useUser();
 
-  // Redirect only after Clerk is loaded
   React.useEffect(() => {
     if (!isLoaded) return;
     if (!isSignedIn) router.replace('/(auth)/sign-in');
@@ -38,7 +37,7 @@ export default function Processing() {
 
   if (!isLoaded || !isSignedIn) return null;
 
-  const uid = user!.id; // ✅ Clerk user id (not user.uid)
+  const uid = user!.id;
 
   const [status, setStatus] = React.useState<ProcessingStatus | null>(null);
   const [docExists, setDocExists] = React.useState(false);
@@ -46,15 +45,12 @@ export default function Processing() {
   const [canKeepWaiting, setCanKeepWaiting] = React.useState(false);
   const [retryCount, setRetryCount] = React.useState(0);
 
-  // Enable "Keep Waiting" after 60s
   React.useEffect(() => {
-    const timer = setTimeout(() => setCanKeepWaiting(true), 60000);
+    const timer = setTimeout(() => setCanKeepWaiting(true), 60_000);
     return () => clearTimeout(timer);
   }, [retryCount]);
 
-  // Firestore listener → updates status and jumps to Story when ready
   React.useEffect(() => {
-    // Guard inputs
     if (!storyId) { setError('missing_story_id'); return; }
     if (!uid)     { setError('auth_required');     return; }
 
@@ -62,55 +58,59 @@ export default function Processing() {
     setDocExists(false);
     setStatus(null);
 
-    const docRef = doc(db, `users/${uid}/vaultentry/${storyId}`);
-    console.log('[processing] listen path:', 'users', uid, 'vaultentry', String(storyId));
+    const ref = doc(db, `users/${uid}/vaultentry/${storyId}`);
     const unsubscribe = onSnapshot(
-      docRef,
+      ref,
       (snap) => {
-        if (snap.exists()) {
-          setDocExists(true);
-          const data = snap.data() as VaultEntry;
-          const currentStatus = data.status;
-          setStatus(currentStatus);
-          if (currentStatus === 'ready') {
-            router.replace({ pathname: '/story/[id]', params: { id: String(storyId) } });
-          }
-        } else {
+        if (!snap.exists()) {
           setDocExists(false);
           setStatus(null);
+          return;
+        }
+        setDocExists(true);
+        const data = snap.data() as VaultEntry;
+        const current = data.status;
+        setStatus(current);
+        if (current === 'ready') {
+          router.replace({ pathname: '/story/[id]', params: { id: String(storyId) } });
         }
       },
-      (error) => {
-        console.error('[processing] onSnapshot error:', error);
-        setError('listener_error');
-      }
+      () => setError('listener_error')
     );
 
     return () => unsubscribe();
   }, [uid, storyId, retryCount, router]);
 
   const getStatusContent = () => {
-    if (!docExists) return { title: 'Setting things up…', subtitle: 'Preparing your story for processing.' };
+    if (!docExists) return { title: 'Setting things up…', subtitle: 'Preparing your story for processing.' as const };
     switch (status) {
-      case 'queued':        return { title: 'Queued…',             subtitle: "We'll start in a moment." };
-      case 'transcribing':  return { title: 'Transcribing audio…',  subtitle: 'Converting your voice to text.' };
-      case 'analyzing':     return { title: 'Generating feedback…', subtitle: 'Creating personalized insights.' };
-      case 'failed':        return { title: 'Processing failed',    subtitle: 'Something went wrong. Please try again.' };
-      default:              return { title: 'Processing…',          subtitle: 'Working on your story.' };
+      case 'queued':        return { title: 'Queued…',             subtitle: "We'll start in a moment." as const };
+      case 'transcribing':  return { title: 'Transcribing audio…',  subtitle: 'Converting your voice to text.' as const };
+      case 'analyzing':     return { title: 'Generating feedback…', subtitle: 'Creating personalized insights.' as const };
+      case 'failed':        return { title: 'Processing failed',    subtitle: 'Something went wrong. Please try again.' as const };
+      default:              return { title: 'Processing…',          subtitle: 'Working on your story.' as const };
     }
   };
 
-  const handleRetry = () => { setRetryCount((n) => n + 1); setCanKeepWaiting(false); setError(null); };
+  const handleRetry = () => {
+    setRetryCount((n) => n + 1);
+    setCanKeepWaiting(false);
+    setError(null);
+  };
+
   const handleBackToTell = () => router.replace('/tell');
 
-  // Error panels
   if (error === 'auth_required') {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: theme.spacing.l }}>
           <View style={{ backgroundColor: theme.colors.bannerBg, borderRadius: theme.radii.md, padding: theme.spacing.l, marginBottom: theme.spacing.l, ...theme.shadows.cardSm }}>
-            <Heading size="m" style={{ textAlign: 'center', marginBottom: theme.spacing.m, color: theme.colors.bannerText }}>Authentication Required</Heading>
-            <BodyText style={{ textAlign: 'center', color: theme.colors.bannerText }}>Please log in to continue processing your story.</BodyText>
+            <Heading size="m" style={{ textAlign: 'center', marginBottom: theme.spacing.m, color: theme.colors.bannerText }}>
+              Authentication Required
+            </Heading>
+            <BodyText style={{ textAlign: 'center', color: theme.colors.bannerText }}>
+              Please log in to continue processing your story.
+            </BodyText>
           </View>
           <Button title="Back to Tell" variant="primary" onPress={handleBackToTell} />
         </View>
@@ -123,8 +123,12 @@ export default function Processing() {
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: theme.spacing.l }}>
           <View style={{ backgroundColor: theme.colors.bannerBg, borderRadius: theme.radii.md, padding: theme.spacing.l, marginBottom: theme.spacing.l, ...theme.shadows.cardSm }}>
-            <Heading size="m" style={{ textAlign: 'center', marginBottom: theme.spacing.m, color: theme.colors.bannerText }}>Story Not Found</Heading>
-            <BodyText style={{ textAlign: 'center', color: theme.colors.bannerText }}>No story ID was provided. Please start a new recording.</BodyText>
+            <Heading size="m" style={{ textAlign: 'center', marginBottom: theme.spacing.m, color: theme.colors.bannerText }}>
+              Story Not Found
+            </Heading>
+            <BodyText style={{ textAlign: 'center', color: theme.colors.bannerText }}>
+              No story ID was provided. Please start a new recording.
+            </BodyText>
           </View>
           <Button title="Back to Tell" variant="primary" onPress={handleBackToTell} />
         </View>
@@ -139,12 +143,25 @@ export default function Processing() {
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: theme.spacing.l }}>
         <View style={{ alignItems: 'center', marginBottom: theme.spacing.xl }}>
           <ActivityIndicator size="large" color={theme.colors.primary} style={{ marginBottom: theme.spacing.l }} />
-          <Heading size="xl" style={{ textAlign: 'center', marginBottom: theme.spacing.m }}>{content.title}</Heading>
-          <BodyText style={{ textAlign: 'center', opacity: 0.7 }}>{content.subtitle}</BodyText>
+          <Heading size="xl" style={{ textAlign: 'center', marginBottom: theme.spacing.m }}>
+            {content.title}
+          </Heading>
+          <BodyText style={{ textAlign: 'center', opacity: 0.7 }}>
+            {content.subtitle}
+          </BodyText>
         </View>
 
         {status === 'failed' && (
-          <View style={{ backgroundColor: theme.colors.bannerBg, borderRadius: theme.radii.md, padding: theme.spacing.l, marginBottom: theme.spacing.l, width: '100%', ...theme.shadows.cardSm }}>
+          <View
+            style={{
+              backgroundColor: theme.colors.bannerBg,
+              borderRadius: theme.radii.md,
+              padding: theme.spacing.l,
+              marginBottom: theme.spacing.l,
+              width: '100%',
+              ...theme.shadows.cardSm,
+            }}
+          >
             <BodyText style={{ textAlign: 'center', color: theme.colors.bannerText, marginBottom: theme.spacing.m }}>
               Processing failed. This might be due to audio quality or server issues.
             </BodyText>
@@ -156,7 +173,16 @@ export default function Processing() {
         )}
 
         {error === 'listener_error' && (
-          <View style={{ backgroundColor: theme.colors.bannerBg, borderRadius: theme.radii.md, padding: theme.spacing.l, marginBottom: theme.spacing.l, width: '100%', ...theme.shadows.cardSm }}>
+          <View
+            style={{
+              backgroundColor: theme.colors.bannerBg,
+              borderRadius: theme.radii.md,
+              padding: theme.spacing.l,
+              marginBottom: theme.spacing.l,
+              width: '100%',
+              ...theme.shadows.cardSm,
+            }}
+          >
             <BodyText style={{ textAlign: 'center', color: theme.colors.bannerText, marginBottom: theme.spacing.m }}>
               Connection error. Please check your internet connection.
             </BodyText>

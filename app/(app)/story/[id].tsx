@@ -64,14 +64,17 @@ export default function StoryDetail() {
   const [transcriptExpanded, setTranscriptExpanded] = React.useState(false);
   const [reloadKey, setReloadKey] = React.useState(0);
 
-  // Allow audio in iOS silent mode (tiny required setting)
+  // prevent double-loads; reset when URL changes
+  const loadingSoundRef = React.useRef(false);
+  const lastUrlRef = React.useRef<string | undefined>(undefined);
+
+  // allow playback in iOS silent mode
   React.useEffect(() => {
     (async () => {
       try {
         await Audio.setAudioModeAsync({
           allowsRecordingIOS: false,
           playsInSilentModeIOS: true,
-          // >>> added
           playThroughEarpieceAndroid: false,
           shouldDuckAndroid: true,
         });
@@ -79,6 +82,7 @@ export default function StoryDetail() {
     })();
   }, []);
 
+  // live story doc
   React.useEffect(() => {
     if (!isLoaded || !isSignedIn || !user || !storyId) return;
     const docRef = doc(db, 'users', user.id, 'vaultentry', String(storyId));
@@ -134,6 +138,26 @@ export default function StoryDetail() {
     return () => unsub();
   }, [isLoaded, isSignedIn, user, storyId, reloadKey]);
 
+  // if URL changes, unload existing sound so we can reload cleanly
+  React.useEffect(() => {
+    const url = story?.recordingUrl;
+    if (url && lastUrlRef.current !== url) {
+      lastUrlRef.current = url;
+      (async () => {
+        try {
+          if (sound) {
+            await sound.stopAsync();
+            await sound.unloadAsync();
+          }
+        } catch {}
+        setSound(null);
+        setIsPlaying(false);
+        setPosition(0);
+        setDuration(0);
+      })();
+    }
+  }, [story?.recordingUrl]);
+
   React.useEffect(() => {
     return () => { if (sound) sound.unloadAsync().catch(() => {}); };
   }, [sound]);
@@ -141,15 +165,14 @@ export default function StoryDetail() {
   // --- playback helpers ---
   const loadAudio = async (): Promise<Audio.Sound | null> => {
     if (!story?.recordingUrl) return null;
+    if (loadingSoundRef.current) return sound;
+    loadingSoundRef.current = true;
     try {
       const { sound: s, status } = await Audio.Sound.createAsync(
         { uri: story.recordingUrl },
         { shouldPlay: false }
       );
       setSound(s);
-      // >>> added
-      await s.setIsMutedAsync(false);
-      await s.setVolumeAsync(1.0);
       if ('isLoaded' in status && status.isLoaded) setDuration(status.durationMillis || 0);
 
       s.setOnPlaybackStatusUpdate((st) => {
@@ -157,7 +180,6 @@ export default function StoryDetail() {
           setPosition(st.positionMillis || 0);
           setDuration(st.durationMillis || 0);
           setIsPlaying(!!st.isPlaying);
-          // when it finishes, reset to start so it can be replayed immediately
           if ('didJustFinish' in st && st.didJustFinish) {
             setIsPlaying(false);
             setPosition(0);
@@ -170,6 +192,8 @@ export default function StoryDetail() {
     } catch (e) {
       console.error('Error loading audio:', e);
       return null;
+    } finally {
+      loadingSoundRef.current = false;
     }
   };
 
@@ -178,17 +202,11 @@ export default function StoryDetail() {
     if (!s) s = await loadAudio();
     if (!s) return;
 
-    // If it's playing, restart from the beginning (auto "refresh")
     if (isPlaying) {
-      try {
-        await s.stopAsync();
-      } catch {}
-      await s.setPositionAsync(0);
-      await s.playAsync();
+      try { await s.pauseAsync(); } catch {}
       return;
     }
 
-    // If not playing and we're at (or past) the end, start from 0
     if (duration > 0 && position >= Math.max(0, duration - 250)) {
       await s.playFromPositionAsync(0);
     } else {
@@ -196,12 +214,8 @@ export default function StoryDetail() {
     }
   };
 
-  // Re-record always goes to Tell page (no paywall gate here)
-  const handleReRecord = () => {
-    router.push('/tell');
-  };
+  const handleReRecord = () => { router.push('/tell'); };
 
-  // Delete Firestore doc, then return to Vault
   const handleDelete = () => {
     Alert.alert('Delete Story', 'Delete this story permanently?', [
       { text: 'Cancel', style: 'cancel' },
@@ -271,8 +285,8 @@ export default function StoryDetail() {
     );
   }
 
-  const isReady = story.status === 'ready';
   const isFailed = story.status === 'failed';
+  const canPlay = !!story.recordingUrl; // 🔑 play as soon as URL exists
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
@@ -331,10 +345,8 @@ export default function StoryDetail() {
             borderColor: theme.colors.btnBorder,
             ...theme.shadows.cardSm,
           }}>
-            {!isReady ? (
-              <BodyText style={{ textAlign: 'center', color: theme.colors.text }}>Audio will appear when ready.</BodyText>
-            ) : !story.recordingUrl ? (
-              <BodyText style={{ textAlign: 'center', color: theme.colors.text }}>Audio not available.</BodyText>
+            {!canPlay ? (
+              <BodyText style={{ textAlign: 'center', color: theme.colors.text }}>Audio will appear when available.</BodyText>
             ) : (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.m }}>
                 <Pressable
@@ -352,7 +364,7 @@ export default function StoryDetail() {
                       {formatTime(position)}
                     </Text>
                     <Text style={{ ...theme.typography.caption, color: theme.colors.text }}>
-                      {rightTimeLabel}
+                      {duration > 0 ? formatTime(duration) : (story?.durationSec ? `${Math.floor(story.durationSec / 60)}:${String(story.durationSec % 60).padStart(2, '0')}` : '0:00')}
                     </Text>
                   </View>
                 </View>

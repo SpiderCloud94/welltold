@@ -29,7 +29,6 @@ async function fakeUploadToFirestore(form: FormData): Promise<UploadResult> {
     contextbox,
     durationSec,
     recordingUrl: '',
-    // NOTE: prod will write transcript/feedback — dev can leave as empty strings
     transcript: '',
     feedback: '',
     status: 'queued',
@@ -54,6 +53,7 @@ async function realUploadToWebhook(form: FormData): Promise<UploadResult> {
       'X-Device-Id': deviceId,
       'X-Welltold-Secret': SECRET,
       'Accept': 'application/json',
+      'Accept-Encoding': 'identity', // ✅ recorder fix: prevent gzip/truncated body
       // DO NOT set Content-Type for FormData; RN/fetch will set proper boundary.
     },
     body: form,

@@ -18,12 +18,12 @@ import Button from '../../primitives/Button';
 import Heading from '../../primitives/Heading';
 import { useEntitlement } from '../../providers/EntitlementsProvider';
 
-// ✅ duration fix (unchanged)
+// duration fix (unchanged)
 import { Audio } from 'expo-av';
-// ✅ NEW: for zero-byte guard
+// zero-byte guard
 import * as FileSystem from 'expo-file-system';
 
-// 🔥 Firestore (client) – used only to create the shell doc
+// Firestore (client) – used only to create the shell doc
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 
@@ -63,16 +63,17 @@ export default function Tell() {
 
   const canUsePaid = BUILD_ALLOW_TELL || hasAccess;
 
+  // ---- minimal change: correct timer typing
   React.useEffect(() => {
-    let timerId: number | null = null;
+    let timerId: ReturnType<typeof setInterval> | null = null;
     if (recordingState === 'recording') {
-      timerId = (setInterval(() => { setRecordingTime((p) => p + 1); }, 1000) as unknown) as number;
+      timerId = setInterval(() => { setRecordingTime((p) => p + 1); }, 1000);
     }
     return () => { if (timerId !== null) clearInterval(timerId); };
   }, [recordingState]);
 
+  // ---- load saved context on mount (unchanged)
   React.useEffect(() => { loadSavedContext(); }, []);
-  React.useEffect(() => { if (context) AsyncStorage.setItem('pendingContext', context); }, [context]);
 
   const loadSavedContext = async () => {
     try { const saved = await AsyncStorage.getItem('pendingContext'); if (saved) setContext(saved); }
@@ -82,6 +83,16 @@ export default function Tell() {
   const clearSavedContext = async () => {
     try { await AsyncStorage.removeItem('pendingContext'); }
     catch (e) { console.error('Failed to clear context:', e); }
+  };
+
+  // ---- minimal addition: tiny debounce so we don't spam writes
+  const saveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleContextChange = (value: string) => {
+    setContext(value);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      AsyncStorage.setItem('pendingContext', value).catch(() => {});
+    }, 500);
   };
 
   function withAccess(action: () => void) {
@@ -104,7 +115,7 @@ export default function Tell() {
         const result = await stopRecordingGetFile();
         setAudioUri(result.uri);
 
-        // ⬇️ duration read (unchanged)
+        // duration read (unchanged)
         try {
           const { sound, status } = await Audio.Sound.createAsync(
             { uri: result.uri },
@@ -134,7 +145,7 @@ export default function Tell() {
     setUploadError(null);
 
     try {
-      // ✅ NEW: zero-byte guard before doing anything else
+      // zero-byte guard
       const info = await FileSystem.getInfoAsync(audioUri);
       if (!info.exists || (info.size ?? 0) === 0) {
         setUploadError('Recording failed. File is empty.');
@@ -177,11 +188,11 @@ export default function Tell() {
       const deviceId = await getOrCreateDeviceId();
       form.append('deviceId', deviceId);
 
-      // ✅ NEW: explicit filename + mimeType fields
+      // explicit filename + mimeType
       form.append('filename', 'story.m4a');
       form.append('mimeType', 'audio/m4a');
 
-      // RN file part (kept the same)
+      // RN file part
       // @ts-expect-error react-native FormData file
       form.append('file', { uri: audioUri, name: 'story.m4a', type: 'audio/m4a' });
 
@@ -206,7 +217,10 @@ export default function Tell() {
   };
 
   const formatTime = (s: number) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
-  const getMicButtonLabel = () => (recordingState === 'idle' ? 'Tap to Record' : recordingState === 'recording' ? 'Tap to Stop' : 'Recording Complete');
+  const getMicButtonLabel = () =>
+    (recordingState === 'idle' ? 'Tap to Record'
+      : recordingState === 'recording' ? 'Tap to Stop'
+      : 'Recording Complete');
   const tryAgainPermission = () => { setPermissionDenied(false); withAccess(handleMicPress); };
 
   return (
@@ -220,7 +234,7 @@ export default function Tell() {
         <View style={{ marginBottom: theme.spacing.m }}>
           <TextInput
             value={context}
-            onChangeText={setContext}
+            onChangeText={handleContextChange}
             placeholder="What's your story? Paint a quick picture for context 👀"
             multiline
             style={{
